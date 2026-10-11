@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E1A24">
+<title>ClickConfirm Test App</title>
+<!--
+  ClickConfirm Test App v1 (prototype receiver on a phone)
+  - Acts as the receiver for ClickConfirm pods over Bluetooth (Web Bluetooth).
+  - Shows every click live, sends the ACK back so the pod turns green, counts bolts,
+    flags pull-throughs, and exports a CSV log.
+  Runs in Chrome on Android, Windows, macOS, ChromeOS. Not in iPhone Safari.
+  Must be opened from https:// (e.g. GitHub Pages) or http://localhost.
+  Matches pod firmware ClickConfirm_Pod.ino v3 (service ccc11000-210f-6ca1-904e-7d2b551e8a3c).
+-->
+<style>
+:root{--bg:#0E1A24;--panel:#162430;--line:#2B4252;--ink:#EEF2F4;--muted:#93A6B3;--amber:#F2A71B;--ok:#3CC47C;--bad:#E0503F;--blue:#36C6E8;--violet:#9DB1FF}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+body{padding:max(14px,env(safe-area-inset-top)) 14px max(20px,env(safe-area-inset-bottom))}
+.wrap{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+h1{font-size:22px;margin:0;letter-spacing:.02em}
+.tag{font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+button{font:600 16px system-ui,sans-serif;border-radius:10px;border:1px solid #4A5862;background:#1C2C38;color:var(--ink);padding:12px 16px;min-height:48px;cursor:pointer}
+button.primary{background:var(--amber);color:#14202B;border-color:var(--amber)}
+button.warn{border-color:var(--bad);color:#F6B2AA}
+button:disabled{opacity:.45}
+button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.big{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.count{font:700 64px/1 system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.count small{font-size:28px;color:var(--muted)}
+.state{font-size:18px;font-weight:600;padding:10px 14px;border-radius:10px;background:#1C2C38}
+.state.ok{background:#13302A;color:#7FE0A3}.state.bad{background:#2A1716;color:#F6B2AA}.state.amber{background:#2A2410;color:#F7DFA6}
+.pods{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.pod{border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px;background:#12202A}
+.pod .name{font-weight:700;font-size:18px}
+.pod .meta{font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;background:var(--muted)}
+.dot.on{background:var(--ok)}.dot.off{background:var(--bad)}
+label{font-size:15px;color:var(--muted);display:flex;align-items:center;gap:8px}
+input[type=number]{width:72px;font-size:16px;padding:8px;border-radius:8px;border:1px solid #4A5862;background:#0B141B;color:var(--ink)}
+input[type=checkbox]{width:22px;height:22px}
+.log{max-height:46vh;overflow:auto;border-radius:10px;border:1px solid var(--line)}
+table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #22323E;white-space:nowrap}
+th{position:sticky;top:0;background:#1A2A36;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+td.s-COUNTED{color:#7FE0A3}td.s-NOT_COUNTED{color:#F7DFA6}td.s-NO_ACK_SENT{color:#F6B2AA}td.s-ACK_FAILED{color:#F6B2AA}td.s-PULLTHRU{color:#C9D3FF}
+.note{font-size:14px;color:var(--muted);line-height:1.45}
+.err{background:#2A1716;border:1px solid var(--bad);color:#F6B2AA;border-radius:10px;padding:12px;font-size:15px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><div class="tag">ClickConfirm · prototype receiver</div><h1>Click Test App</h1></div>
+    <div class="row">
+      <button class="primary" id="btnConnect" type="button">Connect pod</button>
+      <button id="btnCsv" type="button">Download CSV</button>
+    </div>
+  </header>
+
+  <div id="support" class="err" hidden></div>
+
+  <section class="panel big" aria-live="polite">
+    <div>
+      <div class="tag">Bolts counted</div>
+      <div class="count"><span id="count">0</span> <small>/ <span id="batchLbl">6</span></small></div>
+    </div>
+    <div id="state" class="state">No pod connected</div>
+  </section>
+
+  <section class="panel">
+    <div class="row" style="justify-content:space-between">
+      <label for="batch">Bolts per batch <input id="batch" type="number" min="1" max="99" value="6"></label>
+      <label for="enabled"><input id="enabled" type="checkbox" checked> Counting enabled</label>
+      <label for="noack" title="Do not answer clicks, to test the pod's red no-ACK signal"><input id="noack" type="checkbox"> Simulate lost link (no ACK)</label>
+      <button id="btnReset" type="button">Reset batch</button>
+    </div>
+  </section>
+
+  <section class="pods" id="pods"></section>
+
+  <section class="panel">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <div class="tag">Event log (newest first)</div>
+      <button class="warn" id="btnClear" type="button">Clear log</button>
+    </div>
+    <div class="log">
+      <table>
+        <thead><tr><th>Time</th><th>Pod</th><th>Seq</th><th>Type</th><th>Peak g</th><th>Jump °/s</th><th>Batt mV</th><th>Result</th><th>Count</th></tr></thead>
+        <tbody id="log"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <p class="note">Each click is answered with an ACK so the pod flashes green. "Counting enabled" off = the pod gets NOT COUNTED (amber). "Simulate lost link" = no answer, so the pod must flash red after 1 s and nothing is counted. Keep this page open and the screen on during tests.</p>
+</div>
+
+<script>
+(() => {
+  const SVC = 'ccc11000-210f-6ca1-904e-7d2b551e8a3c';
+  const EVT = 'ccc11001-210f-6ca1-904e-7d2b551e8a3c';
+  const ACK = 'ccc11002-210f-6ca1-904e-7d2b551e8a3c';
+  const T = {1:'CLICK', 2:'HEARTBEAT', 3:'PULLTHRU'};
+  const ST = {COUNTED:1, NOT_COUNTED:2, REJECT:3};
+
+  const $ = id => document.getElementById(id);
+  const pods = new Map();          // name -> {device, ackChr, lastSeq, lastStatus, batt, lastHeard, connected, clicks}
+  const log = [];                  // all rows for CSV
+  let count = 0, wakeLock = null;
+
+  // ---------- support checks ----------
+  if (!('bluetooth' in navigator)) {
+    $('support').hidden = false;
+    $('support').textContent = 'This browser has no Web Bluetooth. Use Chrome on Android or a Windows/Mac laptop, opened from an https:// address. iPhone Safari is not supported.';
+    $('btnConnect').disabled = true;
+  } else if (!window.isSecureContext) {
+    $('support').hidden = false;
+    $('support').textContent = 'Open this page from an https:// address (for example GitHub Pages) or http://localhost. Bluetooth is blocked on plain http and file pages.';
+  }
+
+  // ---------- UI ----------
+  function setState(text, kind) { const s = $('state'); s.textContent = text; s.className = 'state' + (kind ? ' ' + kind : ''); }
+  function renderCount() { $('count').textContent = count; $('batchLbl').textContent = batch(); }
+  function batch() { const v = parseInt($('batch').value, 10); return v > 0 ? v : 6; }
+  function renderPods() {
+    const el = $('pods'); el.innerHTML = '';
+    for (const [name, p] of pods) {
+      const ago = p.lastHeard ? Math.round((Date.now() - p.lastHeard) / 1000) + ' s ago' : '—';
+      const d = document.createElement('div'); d.className = 'pod';
+      d.innerHTML = `<div class="name"><span class="dot ${p.connected ? 'on' : 'off'}"></span>${name}</div>
+        <div class="meta">${p.connected ? 'Connected' : 'Disconnected'} · last heard ${ago}</div>
+        <div class="meta">Battery ${p.batt ? p.batt + ' mV' : '—'} · clicks ${p.clicks}</div>`;
+      if (!p.connected) {
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Reconnect';
+        b.onclick = () => connectDevice(p.device); d.appendChild(b);
+      }
+      el.appendChild(d);
+    }
+  }
+  function addRow(r) {
+    log.push(r);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.time}</td><td>${r.pod}</td><td>${r.seq}</td><td>${r.type}</td><td>${r.peak_g}</td><td>${r.jump_dps}</td><td>${r.batt_mv}</td><td class="s-${r.result}">${r.result.replace(/_/g, ' ')}</td><td>${r.count}</td>`;
+    $('log').prepend(tr);
+  }
+  function stamp() { const d = new Date(); return d.toLocaleTimeString([], {hour12:false}) + '.' + String(d.getMilliseconds()).padStart(3, '0'); }
+
+  // ---------- Bluetooth ----------
+  async function connect() {
+    try {
+      const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }, { namePrefix: 'CC-' }], optionalServices: [SVC] });
+      await connectDevice(device);
+    } catch (e) {
+      if (e && e.name !== 'NotFoundError') setState('Could not connect: ' + e.message, 'bad');
+    }
+  }
+  async function connectDevice(device) {
+    const name = device.name || device.id;
+    setState('Connecting to ' + name + '…', 'amber');
+    let p = pods.get(name);
+    if (!p) {
+      p = { device, ackChr: null, lastSeq: -1, lastStatus: 0, batt: 0, lastHeard: 0, connected: false, clicks: 0 };
+      pods.set(name, p);
+      device.addEventListener('gattserverdisconnected', () => {
+        p.connected = false; renderPods();
+        setState(name + ' disconnected: clicks will NOT count', 'bad');
+        if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+      });
+    }
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    const evt = await svc.getCharacteristic(EVT);
+    p.ackChr = await svc.getCharacteristic(ACK);
+    evt.addEventListener('characteristicvaluechanged', ev => onEvent(name, ev.target.value));
+    await evt.startNotifications();
+    p.connected = true; p.lastHeard = Date.now();
+    renderPods(); setState(name + ' connected · ready', 'ok');
+    keepAwake();
+  }
+
+  function parse(dv) {
+    return { ver: dv.getUint8(0), type: dv.getUint8(1), seq: dv.getUint16(2, true), tool: dv.getUint16(4, true),
+             peak: dv.getUint16(6, true) / 100, jump: dv.getInt16(8, true), batt: dv.getUint16(10, true),
+             extra: dv.getUint16(12, true), flags: dv.getUint8(14) };
+  }
+
+  async function writeAck(p, seq, status, cnt) {
+    const b = new Uint8Array([seq & 255, seq >> 8, status, cnt & 255]);
+    try { await p.ackChr.writeValueWithResponse(b); return true; } catch (e) { return false; }
+  }
+
+  async function onEvent(name, dv) {
+    if (dv.byteLength < 16) return;
+    const p = pods.get(name); const e = parse(dv);
+    p.lastHeard = Date.now(); if (e.batt) p.batt = e.batt;
+    const type = T[e.type] || ('TYPE' + e.type);
+    if (e.type === 2) { renderPods(); return; }                           // heartbeat
+
+    if (e.type === 3) {                                                     // pull-through
+      addRow({ time: stamp(), pod: name, seq: e.seq, type, peak_g: '', jump_dps: '', batt_mv: e.batt, result: 'PULLTHRU', count, extra: (e.extra / 10).toFixed(1) + ' deg' });
+      setState('Pull-through on ' + name + ' (' + (e.extra / 10).toFixed(1) + '°): re-check that bolt', 'bad');
+      if (navigator.vibrate) navigator.vibrate([150, 80, 150]);
+      return;
+    }
+    if (e.type !== 1) return;
+
+    // duplicate (pod retry): answer the same, never count twice
+    if (e.seq === p.lastSeq) { if (!$('noack').checked && p.lastStatus) await writeAck(p, e.seq, p.lastStatus, count); return; }
+
+    p.clicks++;
+    let result;
+    if ($('noack').checked) {
+      result = 'NO_ACK_SENT'; p.lastSeq = e.seq; p.lastStatus = 0;
+      setState('Click from ' + name + ' ignored (lost-link test): pod should flash red', 'bad');
+    } else {
+      const status = ($('enabled').checked && count < batch()) ? ST.COUNTED : ST.NOT_COUNTED;
+      const newCount = status === ST.COUNTED ? count + 1 : count;
+      const ok = await writeAck(p, e.seq, status, newCount);
+      p.lastSeq = ok ? e.seq : -1; p.lastStatus = status;
+      if (!ok) { result = 'ACK_FAILED'; setState('ACK did not reach ' + name + ': not counted', 'bad'); }
+      else if (status === ST.COUNTED) {
+        count = newCount; result = 'COUNTED';
+        setState(count >= batch() ? 'Batch complete: ' + count + ' / ' + batch() : 'Counted · ' + name, 'ok');
+        if (navigator.vibrate) navigator.vibrate(80);
+      } else { result = 'NOT_COUNTED'; setState('Click received, not counted (' + (count >= batch() ? 'batch full' : 'counting off') + ')', 'amber'); }
+    }
+    addRow({ time: stamp(), pod: name, seq: e.seq, type, peak_g: e.peak.toFixed(2), jump_dps: e.jump, batt_mv: e.batt, result, count, extra: e.flags & 1 ? 'sent while disconnected' : '' });
+    renderCount(); renderPods();
+  }
+
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => wakeLock = null); } } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && pods.size) keepAwake(); });
+
+  // ---------- CSV ----------
+  function csv() {
+    const head = ['time', 'pod', 'seq', 'type', 'peak_g', 'jump_dps', 'batt_mv', 'result', 'count', 'extra'];
+    const lines = [head.join(',')].concat(log.map(r => head.map(k => String(r[k] ?? '').replace(/,/g, ';')).join(',')));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'clickconfirm-log-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  // ---------- wiring ----------
+  $('btnConnect').onclick = connect;
+  $('btnCsv').onclick = csv;
+  $('btnReset').onclick = () => { count = 0; renderCount(); setState('Batch reset', 'amber'); };
+  $('btnClear').onclick = () => { log.length = 0; $('log').innerHTML = ''; };
+  $('batch').onchange = renderCount;
+  setInterval(renderPods, 5000);
+  renderCount();
+})();
+</script>
+</body>
+</html>
