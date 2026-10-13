@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#171614">
+<title>ClickConfirm Lab</title>
+<!--
+  ClickConfirm Lab v1 (engineering, laptop)
+  - Connects to a pod over USB (Web Serial, Chrome/Edge on Windows/Mac/ChromeOS) running firmware v3.3+.
+  - Shows every raw sample live, cuts each movement into a clip, lets you label clips,
+    keeps the dataset in this browser (and exports/imports JSON), trains a small classifier here,
+    tests it with cross-validation against the pod's current rules, and exports the model as JSON.
+  - Demo mode generates synthetic movements so the whole flow can be tried without hardware.
+  Pod stream format: see labFrame comments in ClickConfirm_Pod.ino.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EDE8DF; --paper-2:#E3DDD2; --ink:#171614; --ink-2:rgba(23,22,20,.62); --ink-3:rgba(23,22,20,.38);
+  --rule:rgba(23,22,20,.16); --signal:#E2481C; --go:#1E6B45;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  --grot:"Archivo","Arial Narrow",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--grot);-webkit-font-smoothing:antialiased}
+body{padding:22px 28px 60px}
+.wrap{max-width:1400px;margin:0 auto}
+.mono,.tag,label,td,th,.note,.chip,select,input{font-family:var(--mono)}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding-bottom:14px;border-bottom:3px solid var(--ink);flex-wrap:wrap}
+.mark{font-weight:800;font-stretch:125%;font-size:15px;letter-spacing:.14em;text-transform:uppercase;margin:0}
+.mark-sub{font:500 11px var(--mono);letter-spacing:.08em;color:var(--ink-2);text-transform:uppercase;margin-top:4px}
+h1{font-weight:800;font-stretch:62%;font-size:64px;line-height:.85;margin:6px 0 0;text-transform:uppercase}
+h2{font-weight:800;font-stretch:75%;font-size:26px;line-height:1;margin:0;text-transform:uppercase}
+.tag{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2)}
+button{font-family:var(--grot);font-weight:700;font-stretch:112%;font-size:13px;letter-spacing:.06em;text-transform:uppercase;
+  border-radius:2px;border:2px solid var(--ink);background:transparent;color:var(--ink);padding:9px 13px;min-height:40px;cursor:pointer}
+button.primary{background:var(--ink);color:var(--paper)}
+button.warn{border-color:var(--signal);color:var(--signal)}
+button.text{border:0;padding:8px 0;min-height:32px;text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:2px}
+button:disabled{opacity:.3;cursor:default}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--signal);outline-offset:2px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.state{margin-top:14px;padding:11px 14px;font:600 14px/1.35 var(--mono);background:var(--paper-2);border-left:6px solid var(--ink)}
+.state.ok{border-left-color:var(--go);color:var(--go)} .state.bad{border-left-color:var(--signal);color:var(--signal)}
+.sec{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:30px 0 10px;padding-bottom:8px;border-bottom:1px solid var(--ink);flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(320px,1fr);gap:34px;align-items:start}
+@media (max-width:980px){.grid{grid-template-columns:1fr}}
+canvas{display:block;width:100%}
+#live{height:330px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}
+label{font-size:12px;color:var(--ink-2);display:inline-flex;align-items:center;gap:8px;letter-spacing:.04em}
+input[type=number]{width:72px;font:600 15px var(--mono);padding:6px;border:2px solid var(--ink);border-radius:2px;background:transparent;color:var(--ink)}
+input[type=text]{font:600 14px var(--mono);padding:7px 9px;border:2px solid var(--ink);border-radius:2px;background:transparent;color:var(--ink);width:160px}
+select{font:600 14px var(--mono);padding:7px 9px;border:2px solid var(--ink);border-radius:2px;background:transparent;color:var(--ink)}
+.classes{display:flex;flex-wrap:wrap;gap:6px}
+.cls{border:2px solid var(--ink);padding:7px 10px;font:600 13px var(--mono);letter-spacing:0;text-transform:none;min-height:36px}
+.cls[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+.cls .n{color:var(--ink-3);font-weight:500;margin-left:6px} .cls[aria-pressed=true] .n{color:rgba(237,232,223,.6)}
+.clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:10px;max-height:760px;overflow:auto;padding-right:4px}
+.clip{border-top:2px solid var(--ink);padding:6px 0 8px;cursor:pointer}
+.clip.sel{border-top-color:var(--signal)}
+.clip canvas{height:62px;background:var(--paper-2)}
+.clip .meta{display:flex;justify-content:space-between;gap:6px;font:12px var(--mono);margin-top:5px;color:var(--ink-2)}
+.clip .lab{font:600 13px var(--mono);color:var(--ink)}
+.clip .lab.none{color:var(--signal)}
+.pill{font:600 10px var(--mono);letter-spacing:.06em;padding:1px 5px;border:1.5px solid currentColor;text-transform:uppercase}
+.pill.click{color:var(--go)} .pill.drop{color:var(--signal)} .pill.rej{color:var(--ink-3)}
+#detail{height:300px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}
+table{border-collapse:collapse;font:13px var(--mono);font-variant-numeric:tabular-nums}
+th,td{padding:6px 10px 6px 0;border-bottom:1px solid var(--rule);text-align:right;white-space:nowrap}
+th{font-weight:500;font-size:11px;color:var(--ink-2);text-transform:uppercase;letter-spacing:.06em}
+td:first-child,th:first-child{text-align:left}
+td.hit{font-weight:600} td.miss{color:var(--signal);font-weight:600}
+.big{font-weight:800;font-stretch:62%;font-size:54px;line-height:.85;font-variant-numeric:tabular-nums}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:18px;margin:12px 0 18px}
+.metrics .tag{display:block;margin-top:6px}
+.note{font-size:13px;line-height:1.6;color:var(--ink-2);max-width:72ch}
+.note b{color:var(--ink)}
+#scatter{height:300px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font:12px var(--mono);margin-top:6px}
+.legend i{display:inline-block;width:10px;height:10px;margin-right:5px;vertical-align:-1px}
+.demo{background:var(--paper-2);padding:10px 12px;margin-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <p class="mark">ClickConfirm</p>
+      <div class="mark-sub">Engineering lab · build the click model</div>
+      <h1>Lab</h1>
+    </div>
+    <div class="row">
+      <button class="primary" id="btnUsb" type="button">Connect pod (USB)</button>
+      <button id="btnDemo" type="button">Demo data</button>
+      <button id="btnStop" type="button" disabled>Stop</button>
+    </div>
+  </header>
+  <div id="state" class="state">Plug a pod into this laptop with USB-C, then Connect pod. Or try Demo data first.</div>
+
+  <div class="grid">
+    <!-- LEFT: live + clips -->
+    <section>
+      <div class="sec"><h2>Live</h2><span class="tag" id="liveInfo">no stream</span></div>
+      <canvas id="live"></canvas>
+      <div class="row" style="justify-content:space-between;margin-top:8px">
+        <div class="legend"><span><i style="background:#171614"></i>shock g (high-pass)</span><span><i style="background:#E2481C"></i>twist on drive axis °/s</span><span><i style="background:rgba(23,22,20,.35)"></i>other axes °/s</span><span>│ pod: CLICK · REJ · DROP</span></div>
+        <button id="btnManual" type="button" disabled>Clip last 1.5 s</button>
+      </div>
+
+      <div class="sec"><h2>Clips</h2>
+        <span class="row" style="gap:16px">
+          <label>Show <select id="filter"><option value="">all</option><option value="__none">unlabelled</option></select></label>
+          <span class="tag" id="clipCount">0 clips</span>
+        </span>
+      </div>
+      <div class="clips" id="clips"></div>
+    </section>
+
+    <!-- RIGHT: labelling + capture settings + detail -->
+    <section>
+      <div class="sec"><h2>Label</h2><span class="tag">tap a clip, then a class · keys 1-9</span></div>
+      <div class="classes" id="classes"></div>
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="newClass" placeholder="new class" maxlength="24">
+        <button id="btnAddClass" type="button">Add</button>
+        <label style="margin-left:auto"><input type="checkbox" id="autoLabel" style="width:18px;height:18px"> Auto-label new clips with the selected class</label>
+      </div>
+      <p class="note" style="margin:8px 0 0">Doing a run of one thing (say 20 clicks)? Tick auto-label, pick the class, then just do them. Classes <b>click</b> and <b>pull-through</b> count as a click; <b>drop</b> raises the drop flag; everything else is ignored.</p>
+
+      <div class="sec"><h2>Clip</h2><span class="tag" id="detailInfo">none selected</span></div>
+      <canvas id="detail"></canvas>
+      <div class="row" style="margin-top:8px;justify-content:space-between">
+        <span class="tag" id="detailFeat"></span>
+        <button class="text warn" id="btnDelClip" type="button" disabled style="color:var(--signal)">Delete clip</button>
+      </div>
+
+      <div class="sec"><h2>Capture</h2><span class="tag">what makes a clip</span></div>
+      <div class="row">
+        <label>Shock ≥ <input type="number" id="trigG" value="1.0" step="0.1" min="0.2"> g</label>
+        <label>or twist ≥ <input type="number" id="trigD" value="150" step="10" min="20"> °/s</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label>Before <input type="number" id="preMs" value="500" step="50" min="200" max="1000"> ms</label>
+        <label>After <input type="number" id="postMs" value="600" step="50" min="200" max="1000"> ms</label>
+      </div>
+      <div class="demo" id="demoBox" hidden>
+        <div class="tag" style="margin-bottom:6px">Demo: make the simulated wrench do…</div>
+        <div class="classes" id="demoBtns"></div>
+        <div class="row" style="margin-top:8px"><button id="btnDemoFill" type="button">Fill 20 of each</button><span class="note">Simulated signals, labelled for you. Real wrench data will look different.</span></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="sec"><h2>Dataset</h2>
+    <span class="row" style="gap:18px">
+      <button class="text" id="btnExport" type="button">Export dataset</button>
+      <label class="text" style="cursor:pointer;text-decoration:underline;text-underline-offset:4px;font:700 13px var(--grot);letter-spacing:.06em;text-transform:uppercase;color:var(--ink)">Import dataset<input type="file" id="fileImport" accept=".json,application/json" hidden></label>
+      <button class="text" id="btnClearAll" type="button" style="color:var(--signal)">Delete all</button>
+    </span>
+  </div>
+  <div class="grid">
+    <div>
+      <table id="counts"></table>
+      <p class="note">Aim for <b>at least 30 clips per class from at least three different wrenches</b> (one model serves every wrench). Clips stay in this browser on this laptop; export the dataset to back it up or to merge clips from other laptops.</p>
+    </div>
+    <div>
+      <div class="row"><label>X <select id="fx"></select></label><label>Y <select id="fy"></select></label></div>
+      <canvas id="scatter" style="margin-top:8px"></canvas>
+      <div class="legend" id="scLegend"></div>
+    </div>
+  </div>
+
+  <div class="sec"><h2>Train</h2>
+    <span class="row" style="gap:18px">
+      <button class="primary" id="btnTrain" type="button">Train + test</button>
+      <button class="text" id="btnModel" type="button" disabled>Export model</button>
+    </span>
+  </div>
+  <div id="trainOut"><p class="note">Training uses only labelled clips. It runs five rounds, each time holding back a fifth of the clips the model has never seen, so the scores below are what to expect on new movements, not a memory test. The pod's current fixed rules are scored on the same clips for comparison.</p></div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const esc = v => String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const INK = '#171614', SIG = '#E2481C', GO = '#1E6B45', MUTE = 'rgba(23,22,20,.35)';
+  const PALETTE = ['#1E6B45', '#E2481C', '#171614', '#7A5C2E', '#2F6FA3', '#9C3F8E', '#6B8E23', '#C08A00', '#5B5B5B', '#A0522D', '#3A7D7C', '#8B1E3F'];
+  const COUNTS_AS = { click: 'click', 'pull-through': 'click', drop: 'drop' };
+  function setState(t, k) { const s = $('state'); s.textContent = t; s.className = 'state' + (k ? ' ' + k : ''); }
+
+  // ------------------------------------------------------------------ classes
+  const DEFAULT_CLASSES = ['click', 'pull-through', 'bump', 'drop', 'ratchet back', 'set down', 'pick up', 'pegboard out', 'pegboard in'];
+  let classes = DEFAULT_CLASSES.slice();
+  try { const c = JSON.parse(localStorage.getItem('cc-lab-classes') || 'null'); if (Array.isArray(c) && c.length) classes = c; } catch (e) {}
+  let activeClass = classes[0];
+  const saveClasses = () => { try { localStorage.setItem('cc-lab-classes', JSON.stringify(classes)); } catch (e) {} };
+  const colorOf = c => PALETTE[Math.max(0, classes.indexOf(c)) % PALETTE.length];
+
+  // ------------------------------------------------------------------ storage (IndexedDB)
+  let db = null;
+  const clips = [];               // {id, t, hz, accLsb, gyrLsb, axis, sign, pre, raw:Int16Array(6*n), markers:[{i,kind,...}], label, source, tool, pred}
+  function idb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('clickconfirm-lab', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('clips', { keyPath: 'id' });
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  }
+  const toStore = c => Object.assign({}, c, { raw: Array.from(c.raw), pred: undefined });
+  const fromStore = o => Object.assign(o, { raw: Int16Array.from(o.raw) });
+  function put(c) { if (!db) return; try { db.transaction('clips', 'readwrite').objectStore('clips').put(toStore(c)); } catch (e) {} }
+  function del(id) { if (!db) return; try { db.transaction('clips', 'readwrite').objectStore('clips').delete(id); } catch (e) {} }
+  async function loadAll() {
+    try {
+      db = await idb();
+      const all = await new Promise((res, rej) => { const q = db.transaction('clips').objectStore('clips').getAll(); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+      all.sort((a, b) => a.t - b.t).forEach(o => clips.push(fromStore(o)));
+    } catch (e) { setState('This browser blocked storage: clips will be lost when the page closes. Export the dataset to keep them.', 'bad'); }
+    renderClasses(); renderClips(); renderCounts(); renderScatter();
+  }
+
+  // ------------------------------------------------------------------ stream state
+  const RING = 12000;                       // ~12 s at 1 kHz
+  const ring = new Int16Array(RING * 6); let head = 0, total = 0;
+  const hpRing = new Float32Array(RING);    // high-passed shock magnitude (g)
+  const markers = [];                       // {at: absolute sample index, kind, peak, tight, other, ff, pt}
+  let meta = { hz: 1000, accLsb: 0.000488, gyrLsb: 0.07, axis: 2, sign: -1, tool: 0, impact: 3, jump: 40, dom: 1.5 };
+  let base = [0, 0, 1], lockUntil = 0, pendingTrig = -1, source = '';
+  const at = (abs, ch) => ring[((abs % RING) * 6) + ch];
+
+  function pushSample(r6) {
+    const k = (total % RING) * 6; for (let i = 0; i < 6; i++) ring[k + i] = r6[i];
+    // same 50 ms high-pass as the pod
+    const a = [r6[3] * meta.accLsb, r6[4] * meta.accLsb, r6[5] * meta.accLsb], alpha = 1 / (0.05 * meta.hz);
+    let s = 0; for (let i = 0; i < 3; i++) { base[i] += (a[i] - base[i]) * alpha; const h = a[i] - base[i]; s += h * h; }
+    const hp = Math.sqrt(s); hpRing[total % RING] = hp;
+    const gm = Math.hypot(r6[0], r6[1], r6[2]) * meta.gyrLsb;
+    // capture trigger
+    if (total >= lockUntil && pendingTrig < 0 && (hp >= +$('trigG').value || gm >= +$('trigD').value)) pendingTrig = total;
+    total++;
+    if (pendingTrig >= 0 && total - pendingTrig >= ms2s(+$('postMs').value)) { cutClip(pendingTrig, source); lockUntil = total; pendingTrig = -1; }
+  }
+  const ms2s = ms => Math.round(ms * meta.hz / 1000);
+
+  function cutClip(trigAbs, src) {
+    const pre = ms2s(+$('preMs').value), post = ms2s(+$('postMs').value), from = trigAbs - pre, n = pre + post;
+    if (from < 0 || total - from > RING) return null;
+    const raw = new Int16Array(n * 6);
+    for (let j = 0; j < n; j++) for (let ch = 0; ch < 6; ch++) raw[j * 6 + ch] = at(from + j, ch);
+    const mk = markers.filter(m => m.at >= from && m.at < from + n).map(m => Object.assign({}, m, { i: m.at - from }));
+    const c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), t: Date.now(), hz: meta.hz, accLsb: meta.accLsb, gyrLsb: meta.gyrLsb,
+                axis: meta.axis, sign: meta.sign, pre, raw, markers: mk, label: $('autoLabel').checked ? activeClass : '', source: src, tool: meta.tool };
+    const span = demoSpans.find(sp => trigAbs >= sp.from - ms2s(200) && trigAbs < sp.to); if (span) c.label = span.label;
+    c.pred = model ? predict(c) : undefined;
+    clips.push(c); put(c);
+    selected = c.id; scheduleRender();
+    return c;
+  }
+
+  let renderT = 0;
+  function scheduleRender() { clearTimeout(renderT); renderT = setTimeout(() => { renderClasses(); renderClips(); renderDetail(); renderCounts(); renderScatter(); }, demoFast ? 600 : 120); }
+
+  // ------------------------------------------------------------------ USB (Web Serial)
+  let skippedTotal = 0;
+  let port = null, reader = null, running = false, rxBuf = new Uint8Array(0), headerSeen = false, liveTimer = 0;
+  async function usbConnect() {
+    if (!('serial' in navigator)) { setState('This browser has no Web Serial. Use Chrome or Edge on a Windows or Mac laptop.', 'bad'); return; }
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+    } catch (e) { if (e.name !== 'NotFoundError') setState('Could not open the pod: ' + e.message, 'bad'); return; }
+    stopDemo(); source = 'usb'; headerSeen = false; rxBuf = new Uint8Array(0); running = true;
+    const w = port.writable.getWriter(); await w.write(new TextEncoder().encode('QL')); w.releaseLock();
+    setState('Connected. Waiting for the pod…', ''); $('btnStop').disabled = false; $('btnManual').disabled = false;
+    clearInterval(liveTimer); liveTimer = setInterval(drawLive, 50);          // redraw the live chart 20 times a second
+    readLoop();
+  }
+  async function readLoop() {
+    try {
+      reader = port.readable.getReader();
+      while (running) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) feed(value);
+      }
+    } catch (e) { if (running) setState('USB link lost: ' + e.message, 'bad'); }
+    finally { try { reader.releaseLock(); } catch (e) {} }
+  }
+  function feed(bytes) {
+    const b = new Uint8Array(rxBuf.length + bytes.length); b.set(rxBuf); b.set(bytes, rxBuf.length);
+    let i = 0;
+    while (i < b.length) {
+      if (!headerSeen) {                               // text until the "LAB1 ..." line
+        const nl = b.indexOf(10, i); if (nl < 0) break;
+        const line = new TextDecoder().decode(b.slice(i, nl)).trim(); i = nl + 1;
+        if (line.startsWith('LAB1')) { parseHeader(line); headerSeen = true; }
+        continue;
+      }
+      const t = b[i];
+      if (t === 0xA5) {
+        if (b.length - i < 14) break;
+        const dv = new DataView(b.buffer, b.byteOffset + i + 2, 12);
+        pushSample([0, 1, 2, 3, 4, 5].map(k => dv.getInt16(k * 2, true))); i += 14;
+      } else if (t === 0x5A) {
+        if (b.length - i < 11) break;
+        const dv = new DataView(b.buffer, b.byteOffset + i, 11);
+        if (dv.getUint8(1) === 5) {                          // pod skipped samples (laptop was not reading fast enough)
+          const skipped = dv.getUint16(6, true); skippedTotal += skipped;
+          pendingTrig = -1; lockUntil = total + ms2s(+$('postMs').value);   // never cut a clip across the gap
+          $('liveInfo').textContent = $('liveInfo').textContent.replace(/ · \d+ samples skipped$/, '') + ' · ' + skippedTotal + ' samples skipped';
+          i += 11; continue;
+        }
+        markers.push({ at: total, kind: dv.getUint8(1), peak: dv.getUint16(2, true) / 100, tight: dv.getInt16(4, true), other: dv.getUint16(6, true), ff: dv.getUint8(8), pt: dv.getUint16(9, true) / 10 });
+        if (markers.length > 400) markers.splice(0, 100);
+        i += 11;
+      } else if (t === 10 || t === 13 || (t >= 32 && t < 127)) {          // stray text line from the pod
+        const nl = b.indexOf(10, i); if (nl < 0) break; i = nl + 1;
+      } else i++;
+    }
+    rxBuf = b.slice(i);
+  }
+  function parseHeader(line) {
+    const kv = Object.fromEntries(line.split(/\s+/).slice(1).map(p => p.split('=')));
+    meta = { hz: +kv.hz || 1000, accLsb: +kv.acc_lsb || 0.000488, gyrLsb: +kv.gyr_lsb || 0.07, axis: +kv.axis || 0, sign: +kv.sign || 1,
+             tool: +kv.tool || 0, impact: +kv.impact || 3, jump: +kv.jump || 40, dom: +kv.dom || 1.5 };
+    base = [0, 0, 1];
+    $('liveInfo').textContent = `pod CC-${String(meta.tool).padStart(3, '0')} · ${Math.round(meta.hz)} samples/s · drive axis ${'XYZ'[meta.axis]}${meta.sign > 0 ? '+' : '−'}`;
+    setState('Streaming from CC-' + String(meta.tool).padStart(3, '0') + '. Every movement over the capture threshold becomes a clip.', 'ok');
+  }
+  async function stopAll() {
+    running = false; stopDemo(); clearInterval(liveTimer);
+    if (port) {
+      try { const w = port.writable.getWriter(); await w.write(new TextEncoder().encode('Q')); w.releaseLock(); } catch (e) {}
+      try { await reader.cancel(); } catch (e) {}
+      try { await port.close(); } catch (e) {}
+      port = null;
+    }
+    $('btnStop').disabled = true; $('btnManual').disabled = true; $('liveInfo').textContent = 'no stream';
+    setState('Stopped.', '');
+  }
+
+  // ------------------------------------------------------------------ demo generator
+  // Synthetic 1 kHz signals. Gravity on +Z, drive axis Z, tightening = negative Z rotation.
+  let demoTimer = 0, demoQueue = [], demoSpans = [], demoFast = false, rngSeed = 7;
+  const rnd = () => { rngSeed = (rngSeed * 16807) % 2147483647; return rngSeed / 2147483647; };
+  const gauss = () => { let u = 0; for (let i = 0; i < 6; i++) u += rnd(); return u - 3; };
+  const R = (a, b) => a + (b - a) * rnd();
+  function demoEvent(kind) {
+    const N = 1300, g = [], a = [];       // 1.3 s, event at 500
+    let grav = [0, 0, 1], grav2 = [R(-.3, .3), R(-.3, .3), 1];
+    for (let i = 0; i < N; i++) { g.push([gauss() * 1.5, gauss() * 1.5, gauss() * 1.5]); a.push([gauss() * .01, gauss() * .01, gauss() * .01]); }
+    const E = 500, D = 2, s = -1;
+    const ring = (i0, amp, f, tau, axisMix) => { i0 = Math.floor(i0); for (let i = i0; i < Math.min(N, i0 + 250); i++) { const t = (i - i0) / 1000, v = amp * Math.exp(-t / tau) * Math.sin(2 * Math.PI * f * t); for (let k = 0; k < 3; k++) a[i][k] += v * axisMix[k]; } };
+    const rot = (i0, i1, axis, dps) => { for (let i = Math.max(0, Math.floor(i0)); i < Math.min(N, Math.floor(i1)); i++) g[i][axis] += dps; };
+    const path = pts => { for (let i = 0; i < N; i++) { let k = 0; while (k < pts.length - 2 && i > pts[k + 1][0]) k++;
+      const [t0, v0] = pts[k], [t1, v1] = pts[k + 1], f = i <= t0 ? 0 : i >= t1 ? 1 : (i - t0) / (t1 - t0); for (let q = 0; q < 3; q++) a[i][q] += v0[q] + (v1[q] - v0[q]) * f; } };
+    const mix = () => { const m = [R(-1, 1), R(-1, 1), R(-1, 1)], n = Math.hypot(...m); return m.map(x => x / n); };
+    const setGrav = (i0, i1, from, to) => { for (let i = 0; i < N; i++) { const f = i1 <= i0 ? (i < i0 ? 0 : 1) : i < i0 ? 0 : i > i1 ? 1 : (i - i0) / (i1 - i0); for (let k = 0; k < 3; k++) a[i][k] += from[k] + (to[k] - from[k]) * f; } };
+    switch (kind) {
+      case 'click': case 'pull-through': {
+        setGrav(0, 0, grav, grav);
+        const rd = R(25, 90); rot(E - R(250, 450), E, D, s * rd);
+        rot(E, E + 12, D, s * R(140, 320)); rot(E + 12, E + 40, D, -s * R(20, 60));
+        ring(E, R(3.5, 8), R(180, 320), R(.008, .02), mix());
+        if (kind === 'pull-through') rot(E + 60, E + R(350, 550), D, s * R(60, 140));
+        for (let k = 0; k < 2; k++) rot(E - 5, E + 15, k, R(-25, 25));
+        break; }
+      case 'bump': {
+        setGrav(0, 0, grav, grav);
+        ring(E, R(1.5, 7), R(120, 400), R(.004, .015), mix());
+        const ax = Math.floor(R(0, 3)); rot(E, E + R(20, 60), ax, R(-120, 120)); rot(E, E + 30, (ax + 1) % 3, R(-80, 80));
+        break; }
+      case 'drop': {
+        const ff = Math.floor(R(120, 320));
+        for (let i = 0; i < N; i++) { const inFall = i >= E - ff && i < E; for (let k = 0; k < 3; k++) a[i][k] += inFall ? 0 : (i < E - ff ? grav[k] : grav2[k]); }
+        for (let k = 0; k < 3; k++) rot(E - ff, E + 80, k, R(-400, 400));
+        ring(E, R(8, 16), R(150, 500), R(.01, .03), mix()); ring(E + 90, R(2, 5), R(150, 400), R(.01, .02), mix());
+        break; }
+      case 'ratchet back': {
+        setGrav(0, 0, grav, grav);
+        rot(E - 150, E + 250, D, -s * R(160, 260));
+        for (let t = E - 120; t < E + 240; t += Math.floor(R(35, 70))) ring(t, R(.8, 2.2), R(300, 500), .004, mix());
+        break; }
+      case 'set down': {
+        setGrav(E - 300, E, grav, grav2);
+        for (let k = 0; k < 3; k++) rot(E - 350, E - 20, k, R(-90, 90));
+        ring(E, R(1.5, 4), R(80, 200), R(.01, .03), mix());
+        break; }
+      case 'pick up': {
+        path([[0, grav], [200, grav2], [E, grav2], [E + 300, grav], [N - 1, grav]]);
+        for (let k = 0; k < 3; k++) rot(E, E + 350, k, (rnd() < .5 ? -1 : 1) * R(90, 200));
+        ring(E, R(.6, 1.6), R(60, 150), R(.01, .03), mix());
+        break; }
+      case 'pegboard out': case 'pegboard in': {
+        const out = kind === 'pegboard out', gh = [R(.85, 1), 0, R(-.3, .3)];
+        // starts and ends upright so the clip edges join the idle stream smoothly
+        path(out ? [[0, grav], [250, gh], [E - 100, gh], [E + 250, grav], [N - 1, grav]]
+                 : [[0, grav], [E - 100, grav], [E + 250, gh], [N - 250, gh], [N - 1, grav]]);
+        for (let k = 0; k < 3; k++) rot(E - 80, E + 280, k, R(-160, 160));
+        ring(E + (out ? -40 : 220), R(1, 3), R(150, 350), R(.006, .015), mix());
+        break; }
+      default: { setGrav(0, 0, grav, grav); for (let k = 0; k < 3; k++) rot(E - 200, E + 200, k, R(-100, 100)); ring(E, R(.8, 3), 200, .01, mix()); }
+    }
+    return { g, a };
+  }
+  // the pod's current fixed rules, applied to the demo stream so CLICK/REJ/DROP markers appear like on hardware
+  function demoMarker(ev) {
+    let peak = 0, maxD = -1e9, other = 0, ff = 0, run = 0, base = 0;
+    for (let i = 350; i < 450; i++) base += meta.sign * ev.g[i][meta.axis] / 100;     // speed 50-150 ms before the shock (firmware v3.7)
+    for (let i = 470; i < 560; i++) { const a = ev.a[i]; peak = Math.max(peak, Math.hypot(a[0], a[1], a[2] - 1) * 0.8); maxD = Math.max(maxD, meta.sign * ev.g[i][meta.axis]); other = Math.max(other, Math.abs(ev.g[i][0]), Math.abs(ev.g[i][1])); }
+    const tight = Math.min(maxD - base, maxD);                                          // change in speed, and turning that way
+    for (let i = 100; i < 500; i++) { const a = ev.a[i]; if (Math.hypot(...a) < 0.4) { run++; ff = Math.max(ff, run); } else run = 0; }
+    if (peak < meta.impact * 0.7 && peak < 1) return null;
+    const ok = ff < 25 && tight >= meta.jump && tight >= meta.dom * other && peak >= meta.impact;
+    return { kind: ok ? 1 : (ff >= 25 && peak >= 2 ? 3 : 2), peak, tight, other, ff, pt: 0 };
+  }
+  function startDemo() {
+    stopDemo(); running = false; source = 'demo'; base = [0, 0, 1];
+    meta = { hz: 1000, accLsb: 0.000488, gyrLsb: 0.07, axis: 2, sign: -1, tool: 0, impact: 3, jump: 40, dom: 1.5 };
+    $('demoBox').hidden = false; $('btnStop').disabled = false; $('btnManual').disabled = false;
+    $('liveInfo').textContent = 'demo · simulated wrench · 1000 samples/s';
+    setState('Demo running. Use the buttons under Capture to make the simulated wrench move.', 'ok');
+    let idle = 0;
+    demoTimer = setInterval(() => {                          // 50 samples every 50 ms = real time (fast-fill: 4000)
+      const burst = demoFast && demoQueue.length ? 4000 : 50;
+      if (demoFast && !demoQueue.length) { demoFast = false; setState('Demo dataset filled. Now press Train + test.', 'ok'); }
+      for (let n = 0; n < burst; n++) {
+        if (!demoQueue.length) { const r = [gauss() * 20, gauss() * 20, gauss() * 20, gauss() * 20, gauss() * 20, Math.round(1 / meta.accLsb + gauss() * 20)]; pushSample(r); idle++; continue; }
+        const q = demoQueue[0];
+        if (q.i === 0 && q.mk) markers.push(Object.assign({ at: total + 500 }, q.mk));
+        if (q.i === 0) { demoSpans.push({ from: total, to: total + q.ev.g.length, label: q.label }); if (demoSpans.length > 50) demoSpans.shift(); }
+        const g = q.ev.g[q.i], a = q.ev.a[q.i];
+        pushSample([...g.map(v => Math.round(v / meta.gyrLsb)), ...a.map(v => Math.round(v / meta.accLsb))]);
+        if (++q.i >= q.ev.g.length) demoQueue.shift();
+      }
+      drawLive();
+    }, 50);
+  }
+  function stopDemo() { clearInterval(demoTimer); demoTimer = 0; demoQueue = []; demoFast = false; $('demoBox').hidden = true; }
+  function demoDo(kind, count) { for (let i = 0; i < (count || 1); i++) { const ev = demoEvent(kind); demoQueue.push({ ev, i: 0, label: kind, mk: demoMarker(ev) }); } }
+
+  // ------------------------------------------------------------------ manual clip (gentle movements)
+  $('btnManual').onclick = () => {
+    const n = ms2s(1500), pre = ms2s(+$('preMs').value);
+    // centre on the largest twist in the last 1.5 s
+    let best = total - n, bv = -1;
+    for (let k = total - n; k < total; k++) { if (k < 0) continue; const v = Math.hypot(at(k, 0), at(k, 1), at(k, 2)); if (v > bv) { bv = v; best = k; } }
+    const keep = $('postMs').value; const c = cutClip(Math.max(best, pre), source + '-manual'); $('postMs').value = keep;
+    if (!c) setState('Not enough recent data for a clip yet.', 'bad');
+  };
+
+  // ------------------------------------------------------------------ features (must match what the pod will compute later)
+  const FEAT = ['shock peak g', 'shock energy 0-30ms (g²·ms)', 'ring energy 30-200ms (g²·ms)', 'twist peak °/s', 'other-axis peak °/s', 'drive dominance',
+                'turn before °', 'turn after °', 'free fall ms', 'min |a| before g', 'motion before °/s', 'motion after °/s',
+                'tilt change °', 'shock width ms', 'twist lag ms', 'total twist peak °/s'];
+  // measurements depend only on the clip's samples, so each clip is measured once and remembered
+  const featCache = new WeakMap();
+  function features(c) { let f = featCache.get(c); if (!f) { f = featuresOf(c); featCache.set(c, f); } return f; }
+  function featuresOf(c) {
+    const n = c.raw.length / 6, hz = c.hz, ms = v => Math.round(v * hz / 1000);
+    const G = (j, k) => c.raw[j * 6 + k] * c.gyrLsb, A = (j, k) => c.raw[j * 6 + 3 + k] * c.accLsb;
+    // high-pass shock magnitude (seed the baseline with the first 50 ms)
+    const b = [0, 0, 0]; for (let j = 0; j < Math.min(n, ms(50)); j++) for (let k = 0; k < 3; k++) b[k] += A(j, k) / Math.min(n, ms(50));
+    const hp = new Float32Array(n), al = 1 / (0.05 * hz);
+    for (let j = 0; j < n; j++) { let s = 0; for (let k = 0; k < 3; k++) { b[k] += (A(j, k) - b[k]) * al; const h = A(j, k) - b[k]; s += h * h; } hp[j] = Math.sqrt(s); }
+    // event centre = biggest shock near the trigger
+    let p = c.pre, pv = -1;
+    for (let j = Math.max(0, c.pre - ms(60)); j < Math.min(n - ms(150), c.pre + ms(400)); j++) if (hp[j] > pv) { pv = hp[j]; p = j; }
+    const rng = (a0, a1) => [Math.max(0, p + ms(a0)), Math.min(n, p + ms(a1))];
+    const sum = (r, f) => { let s = 0; for (let j = r[0]; j < r[1]; j++) s += f(j); return s; };
+    const max = (r, f) => { let m = -Infinity; for (let j = r[0]; j < r[1]; j++) m = Math.max(m, f(j)); return m === -Infinity ? 0 : m; };
+    const drive = j => c.sign * G(j, c.axis), others = j => Math.max(...[0, 1, 2].filter(k => k !== c.axis).map(k => Math.abs(G(j, k))));
+    const gmag = j => Math.hypot(G(j, 0), G(j, 1), G(j, 2)), amag = j => Math.hypot(A(j, 0), A(j, 1), A(j, 2));
+    const w = rng(-25, 25), dt = 1 / hz;
+    const tight = max(w, drive), other = max(w, others);
+    let ff = 0, run = 0; for (let j = rng(-400, 0)[0]; j < p; j++) { if (amag(j) < 0.4) { run++; ff = Math.max(ff, run); } else run = 0; }
+    const meanVec = r => { const v = [0, 0, 0], k = Math.max(1, r[1] - r[0]); for (let j = r[0]; j < r[1]; j++) for (let q = 0; q < 3; q++) v[q] += A(j, q) / k; return v; };
+    const v1 = meanVec(rng(-450, -250)), v2 = meanVec(rng(300, 500));
+    const cos = (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / ((Math.hypot(...v1) * Math.hypot(...v2)) || 1);
+    let wid = 0; for (let j = rng(-50, 50)[0]; j < rng(-50, 50)[1]; j++) if (hp[j] > pv * 0.5) wid++;
+    let lag = 0, lv = -1; for (let j = rng(-50, 50)[0]; j < rng(-50, 50)[1]; j++) { const v = Math.abs(G(j, c.axis)); if (v > lv) { lv = v; lag = j - p; } }
+    const pre = rng(-400, -30), post = rng(200, 500);
+    return [
+      pv,
+      Math.log1p(sum(rng(0, 30), j => hp[j] * hp[j]) * 1000 / hz),       // g²·ms: the same for any sample rate
+      Math.log1p(sum(rng(30, 200), j => hp[j] * hp[j]) * 1000 / hz),
+      tight, other, Math.min(10, Math.max(-10, tight / Math.max(other, 1))),
+      sum(rng(-400, -30), j => drive(j)) * dt, sum(rng(60, 500), j => drive(j)) * dt,
+      ff * 1000 / hz, max(rng(-400, 0), j => -amag(j)) * -1,
+      sum(pre, gmag) / Math.max(1, pre[1] - pre[0]), sum(post, gmag) / Math.max(1, post[1] - post[0]),
+      Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI, wid * 1000 / hz, lag * 1000 / hz, max(rng(-50, 50), gmag)
+    ];
+  }
+
+  // ------------------------------------------------------------------ model: small neural net (16 -> 16 -> classes), trained here
+  let model = null;
+  function trainNet(X, Y, K, opt) {
+    const d = X[0].length, H = 16, lr = 0.01, epochs = opt.epochs || 400, l2 = 1e-4;
+    const mean = new Array(d).fill(0), std = new Array(d).fill(0);
+    X.forEach(x => x.forEach((v, i) => mean[i] += v / X.length));
+    X.forEach(x => x.forEach((v, i) => std[i] += (v - mean[i]) ** 2 / X.length));
+    for (let i = 0; i < d; i++) std[i] = Math.sqrt(std[i]) || 1;
+    const Z = X.map(x => x.map((v, i) => (v - mean[i]) / std[i]));
+    let s = opt.seed || 1; const r = () => { s = (s * 16807) % 2147483647; return s / 2147483647 - 0.5; };
+    const W1 = Array.from({ length: H }, () => Array.from({ length: d }, () => r() * Math.sqrt(6 / d))), b1 = new Array(H).fill(0);
+    const W2 = Array.from({ length: K }, () => Array.from({ length: H }, () => r() * Math.sqrt(6 / H))), b2 = new Array(K).fill(0);
+    const params = [W1, b1, W2, b2];
+    const m = params.map(zerosLike), v = params.map(zerosLike);
+    function zerosLike(p) { return Array.isArray(p[0]) ? p.map(row => row.map(() => 0)) : p.map(() => 0); }
+    const cnt = new Array(K).fill(0); Y.forEach(y => cnt[y]++);
+    const cw = cnt.map(c => c ? Y.length / (K * c) : 0);            // balance rare classes
+    let step = 0;
+    for (let ep = 0; ep < epochs; ep++) {
+      const gW1 = zerosLike(W1), gb1 = zerosLike(b1), gW2 = zerosLike(W2), gb2 = zerosLike(b2);
+      for (let n = 0; n < Z.length; n++) {
+        const x = Z[n], h = new Array(H), o = new Array(K);
+        for (let j = 0; j < H; j++) { let a = b1[j]; for (let i = 0; i < d; i++) a += W1[j][i] * x[i]; h[j] = a > 0 ? a : 0.01 * a; }
+        let mx = -Infinity; for (let k = 0; k < K; k++) { let a = b2[k]; for (let j = 0; j < H; j++) a += W2[k][j] * h[j]; o[k] = a; mx = Math.max(mx, a); }
+        let se = 0; for (let k = 0; k < K; k++) { o[k] = Math.exp(o[k] - mx); se += o[k]; }
+        const wgt = cw[Y[n]] / Z.length;
+        const dO = o.map((p, k) => (p / se - (k === Y[n] ? 1 : 0)) * wgt);
+        const dH = new Array(H).fill(0);
+        for (let k = 0; k < K; k++) { gb2[k] += dO[k]; for (let j = 0; j < H; j++) { gW2[k][j] += dO[k] * h[j]; dH[j] += dO[k] * W2[k][j]; } }
+        for (let j = 0; j < H; j++) { const dh = dH[j] * (h[j] > 0 ? 1 : 0.01); gb1[j] += dh; for (let i = 0; i < d; i++) gW1[j][i] += dh * x[i]; }
+      }
+      step++;
+      const grads = [gW1, gb1, gW2, gb2];
+      params.forEach((P, pi) => {
+        const upd = (Parr, G, M, V, wd) => {
+          for (let i = 0; i < Parr.length; i++) {
+            const g = G[i] + wd * Parr[i];
+            M[i] = 0.9 * M[i] + 0.1 * g; V[i] = 0.999 * V[i] + 0.001 * g * g;
+            Parr[i] -= lr * (M[i] / (1 - 0.9 ** step)) / (Math.sqrt(V[i] / (1 - 0.999 ** step)) + 1e-8);
+          }
+        };
+        if (Array.isArray(P[0])) P.forEach((row, ri) => upd(row, grads[pi][ri], m[pi][ri], v[pi][ri], l2)); else upd(P, grads[pi], m[pi], v[pi], 0);
+      });
+    }
+    return { mean, std, W1, b1, W2, b2 };
+  }
+  // runs trainNet in a Web Worker (built from the same functions), so the USB stream is never starved
+  function trainInWorker(X, Y, K, progress) {
+    const src = `${trainNet.toString()}\n${netProb.toString()}
+      onmessage = e => {
+        const { X, Y, K } = e.data, idx = X.map((_, i) => i); let s = 11;
+        idx.sort(() => { s = (s * 16807) % 2147483647; return s / 2147483647 - 0.5; });
+        const pred = new Array(X.length);
+        for (let f = 0; f < 5; f++) {
+          const test = idx.filter((_, i) => i % 5 === f), tr = idx.filter((_, i) => i % 5 !== f);
+          const net = trainNet(tr.map(i => X[i]), tr.map(i => Y[i]), K, { seed: f + 3 });
+          test.forEach(i => { const p = netProb(net, X[i]); let k = 0; p.forEach((v, j) => { if (v > p[k]) k = j; }); pred[i] = k; });
+          postMessage({ progress: f + 1 });
+        }
+        postMessage({ progress: 6 });
+        postMessage({ done: true, pred, net: trainNet(X, Y, K, { seed: 1, epochs: 500 }) });
+      };`;
+    return new Promise((res, rej) => {
+      const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' })), w = new Worker(url);
+      w.onmessage = e => { if (e.data.progress) progress(e.data.progress); if (e.data.done) { w.terminate(); URL.revokeObjectURL(url); res(e.data); } };
+      w.onerror = e => { w.terminate(); URL.revokeObjectURL(url); rej(new Error(e.message || 'training failed')); };
+      w.postMessage({ X, Y, K });
+    });
+  }
+  function netProb(net, f) {
+    const x = f.map((v, i) => (v - net.mean[i]) / net.std[i]);
+    const h = net.W1.map((w, j) => { let a = net.b1[j]; for (let i = 0; i < x.length; i++) a += w[i] * x[i]; return a > 0 ? a : 0.01 * a; });
+    const o = net.W2.map((w, k) => { let a = net.b2[k]; for (let j = 0; j < h.length; j++) a += w[j] * h[j]; return a; });
+    const mx = Math.max(...o), e = o.map(v => Math.exp(v - mx)), s = e.reduce((a, b) => a + b, 0);
+    return e.map(v => v / s);
+  }
+  function predict(c) {
+    if (!model) return undefined;
+    const p = netProb(model.net, features(c)); let k = 0; p.forEach((v, i) => { if (v > p[k]) k = i; });
+    return { cls: model.classes[k], p: p[k] };
+  }
+  const podSaid = c => { const m = c.markers.find(m => m.kind === 1 || m.kind === 3) || c.markers[0]; return !m ? 'none' : m.kind === 1 ? 'click' : m.kind === 3 ? 'drop' : 'ignored'; };
+  const outcome = cls => COUNTS_AS[cls] || 'ignored';
+
+  async function trainAndTest() {
+    const lab = clips.filter(c => c.label && classes.includes(c.label));
+    const used = classes.filter(k => lab.some(c => c.label === k));
+    if (lab.length < 20 || used.length < 2) { $('trainOut').innerHTML = '<p class="note" style="color:var(--signal)">Need at least 20 labelled clips in at least two classes.</p>'; return; }
+    $('btnTrain').disabled = true; $('trainOut').innerHTML = '<p class="note">Training… (five test rounds, then the final model)</p>';
+    await new Promise(r => setTimeout(r, 30));
+    const X = lab.map(features), Y = lab.map(c => used.indexOf(c.label)), K = used.length;
+    // 5-fold cross-validation + final model, in a background thread so the page keeps reading the pod
+    let pred, net;
+    try { ({ pred, net } = await trainInWorker(X, Y, K, n => { $('trainOut').innerHTML = `<p class="note">Training… round ${n} of 6</p>`; })); }
+    catch (err) { $('btnTrain').disabled = false; $('trainOut').innerHTML = '<p class="note" style="color:var(--signal)">Training failed: ' + esc(err.message) + '</p>'; return; }
+    model = { version: 1, created: new Date().toISOString(), classes: used, features: FEAT, net, counts: Object.fromEntries(used.map(k => [k, lab.filter(c => c.label === k).length])),
+              counts_as: Object.fromEntries(used.map(k => [k, outcome(k)])) };
+    clips.forEach(c => c.pred = predict(c));
+    // scores
+    const conf = used.map(() => used.map(() => 0)); Y.forEach((y, i) => conf[y][pred[i]]++);
+    const isClick = i => outcome(used[Y[i]]) === 'click', saysClick = i => outcome(used[pred[i]]) === 'click';
+    const nClick = Y.filter((_, i) => isClick(i)).length, nNon = Y.length - nClick;
+    const missed = Y.filter((_, i) => isClick(i) && !saysClick(i)).length, falseC = Y.filter((_, i) => !isClick(i) && saysClick(i)).length;
+    const acc = Y.filter((y, i) => y === pred[i]).length / Y.length;
+    const podMissed = lab.filter(c => outcome(c.label) === 'click' && podSaid(c) !== 'click').length;
+    const podFalse = lab.filter(c => outcome(c.label) !== 'click' && podSaid(c) === 'click').length;
+    const dropIdx = used.indexOf('drop'), dropN = dropIdx < 0 ? 0 : Y.filter(y => y === dropIdx).length, dropHit = dropIdx < 0 ? 0 : Y.filter((y, i) => y === dropIdx && pred[i] === dropIdx).length;
+    const pct = (a, b) => b ? (100 * a / b).toFixed(1) + '%' : '—';
+    $('trainOut').innerHTML = `
+      <div class="metrics">
+        <div><div class="big" style="color:${falseC ? 'var(--signal)' : 'var(--go)'}">${falseC}</div><span class="tag">false clicks · of ${nNon} non-clicks (${pct(falseC, nNon)})</span></div>
+        <div><div class="big" style="color:${missed ? 'var(--signal)' : 'var(--go)'}">${missed}</div><span class="tag">missed clicks · of ${nClick} (${pct(missed, nClick)})</span></div>
+        <div><div class="big">${(acc * 100).toFixed(0)}%</div><span class="tag">exact class right</span></div>
+        <div><div class="big">${dropIdx < 0 ? '—' : dropHit + '/' + dropN}</div><span class="tag">drops recognised</span></div>
+      </div>
+      <p class="note"><b>Pod's current rules on the same clips:</b> ${podFalse} false click${podFalse === 1 ? '' : 's'}, ${podMissed} missed (${lab.filter(c => !c.markers.length).length} clips had no pod decision, for example gentle movements captured below the pod's own trigger). A false click is the dangerous error: it means a bolt counted that was never tightened.</p>
+      <div style="overflow:auto"><table><tr><th>actual ↓ / model said →</th>${used.map(k => `<th>${esc(k)}</th>`).join('')}<th>right</th></tr>
+      ${used.map((k, r) => `<tr><td>${esc(k)}</td>${conf[r].map((v, c2) => `<td class="${v ? (r === c2 ? 'hit' : (outcome(used[r]) !== outcome(used[c2]) ? 'miss' : '')) : ''}">${v || '·'}</td>`).join('')}<td>${pct(conf[r][r], conf[r].reduce((a, b) => a + b, 0))}</td></tr>`).join('')}
+      </table></div>
+      <p class="note">Orange cells are mix-ups that change the outcome (click ↔ not a click, or drop missed). Mix-ups between two "ignored" classes, such as set down vs pegboard in, don't matter for counting. The final model is trained on all ${lab.length} clips; every clip card now also shows what it says.</p>`;
+    $('btnModel').disabled = false; $('btnTrain').disabled = false;
+    renderClips();
+    setState(`Model trained on ${lab.length} clips, ${K} classes. ${falseC ? falseC + ' false clicks in testing: add more of the confused movements, then train again.' : 'No false clicks in testing.'}`, falseC ? 'bad' : 'ok');
+  }
+
+  // ------------------------------------------------------------------ drawing
+  function prep(cv) { const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight; if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; } const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H); return { g, W, H }; }
+  function plotWindow(cv, get, n, opts) {
+    const { g, W, H } = prep(cv), half = H / 2, gMax = opts.gMax || 8, dMax = opts.dMax || 400;
+    g.strokeStyle = 'rgba(23,22,20,.12)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, half); g.lineTo(W, half); g.stroke();
+    if (opts.labels) { g.fillStyle = 'rgba(23,22,20,.55)'; g.font = '11px "IBM Plex Mono",monospace'; g.fillText('shock g (0–' + gMax + ')', 6, 13); g.fillText('twist °/s (±' + dMax + ')', 6, half + 13); }
+    const X = j => j / Math.max(1, n - 1) * W;
+    const line = (f, col, y0, scale, lw) => { g.strokeStyle = col; g.lineWidth = lw || 1.2; g.beginPath(); for (let j = 0; j < n; j++) { const y = y0 - f(j) * scale; j ? g.lineTo(X(j), y) : g.moveTo(X(j), y); } g.stroke(); };
+    line(j => Math.min(gMax, get.hp(j)), INK, half - 4, (half - 18) / gMax, 1.3);
+    [0, 1, 2].filter(k => k !== get.axis).forEach(k => line(j => Math.max(-dMax, Math.min(dMax, get.g(j, k))), MUTE, half + (H - half) / 2, (H - half - 10) / 2 / dMax, 1));
+    line(j => Math.max(-dMax, Math.min(dMax, get.sign * get.g(j, get.axis))), SIG, half + (H - half) / 2, (H - half - 10) / 2 / dMax, 1.5);
+    (opts.marks || []).forEach(m => {
+      const x = X(m.i), col = m.kind === 1 ? GO : m.kind === 3 ? SIG : MUTE;
+      g.strokeStyle = col; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); g.setLineDash([]);
+      if (opts.labels) { g.fillStyle = col; g.font = '600 11px "IBM Plex Mono",monospace'; g.fillText(m.kind === 1 ? 'CLICK' : m.kind === 3 ? 'DROP' : m.kind === 4 ? 'PULL' : 'REJ', x + 3, 26); }
+    });
+    if (opts.centre != null) { g.strokeStyle = 'rgba(23,22,20,.25)'; g.beginPath(); g.moveTo(X(opts.centre), 0); g.lineTo(X(opts.centre), H); g.stroke(); }
+  }
+  function drawLive() {
+    const n = Math.min(total, ms2s(4000)), start = total - n;
+    plotWindow($('live'), { hp: j => hpRing[(start + j) % RING], g: (j, k) => at(start + j, k) * meta.gyrLsb, axis: meta.axis, sign: meta.sign }, n,
+      { labels: true, marks: markers.filter(m => m.at >= start).map(m => ({ i: m.at - start, kind: m.kind })) });
+  }
+  function clipGetter(c) {
+    const n = c.raw.length / 6, hp = new Float32Array(n), b = [0, 0, 0], al = 1 / (0.05 * c.hz), k0 = Math.min(n, Math.round(c.hz * 0.05));
+    for (let j = 0; j < k0; j++) for (let k = 0; k < 3; k++) b[k] += c.raw[j * 6 + 3 + k] * c.accLsb / k0;
+    for (let j = 0; j < n; j++) { let s = 0; for (let k = 0; k < 3; k++) { const a = c.raw[j * 6 + 3 + k] * c.accLsb; b[k] += (a - b[k]) * al; s += (a - b[k]) ** 2; } hp[j] = Math.sqrt(s); }
+    return { n, get: { hp: j => hp[j], g: (j, k) => c.raw[j * 6 + k] * c.gyrLsb, axis: c.axis, sign: c.sign } };
+  }
+
+  // ------------------------------------------------------------------ UI: classes, clips, detail, dataset
+  let selected = null;
+  function renderClasses() {
+    const cnt = k => clips.filter(c => c.label === k).length;
+    $('classes').innerHTML = classes.map((k, i) => `<button type="button" class="cls" aria-pressed="${k === activeClass}" data-k="${esc(k)}" style="border-color:${colorOf(k)}">${i < 9 ? (i + 1) + ' · ' : ''}${esc(k)}<span class="n">${cnt(k)}</span></button>`).join('');
+    $('classes').querySelectorAll('.cls').forEach(b => b.onclick = () => applyClass(b.dataset.k));
+    $('demoBtns').innerHTML = classes.map(k => `<button type="button" class="cls" data-k="${esc(k)}">${esc(k)}</button>`).join('');
+    $('demoBtns').querySelectorAll('.cls').forEach(b => b.onclick = () => demoDo(b.dataset.k));
+    const f = $('filter'), v = f.value;
+    f.innerHTML = '<option value="">all</option><option value="__none">unlabelled</option>' + classes.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+    f.value = v;
+  }
+  function applyClass(k) {
+    activeClass = k;
+    const c = clips.find(x => x.id === selected);
+    if (c) { c.label = k; put(c); const i = visibleClips().findIndex(x => x.id === c.id), next = visibleClips()[i + 1]; if (next && !next.label) selected = next.id; }
+    renderClasses(); renderClips(); renderDetail(); renderCounts(); renderScatter();
+  }
+  const visibleClips = () => { const f = $('filter').value; return clips.filter(c => !f || (f === '__none' ? !c.label : c.label === f)); };
+  let clipLimit = 48;                                     // drawing hundreds of thumbnails freezes the page: show more on request
+  function renderClips() {
+    const list = visibleClips().slice().reverse();
+    $('clipCount').textContent = clips.length + ' clips · ' + clips.filter(c => !c.label).length + ' unlabelled';
+    $('clips').innerHTML = list.slice(0, clipLimit).map(c => {
+      const pod = podSaid(c), pred = c.pred;
+      return `<div class="clip${c.id === selected ? ' sel' : ''}" data-id="${c.id}"><canvas></canvas>
+        <div class="meta"><span class="lab${c.label ? '' : ' none'}">${esc(c.label || 'unlabelled')}</span><span class="pill ${pod === 'click' ? 'click' : pod === 'drop' ? 'drop' : 'rej'}" title="what the pod's rules decided">pod ${pod}</span></div>
+        <div class="meta"><span>${new Date(c.t).toLocaleTimeString([], { hour12: false })} · ${esc(c.source)}</span><span title="what the trained model says">${pred ? 'model: ' + esc(pred.cls) : ''}</span></div></div>`;
+    }).join('');
+    $('clips').querySelectorAll('.clip').forEach(el => {
+      const c = clips.find(x => x.id === el.dataset.id), { n, get } = clipGetter(c);
+      plotWindow(el.querySelector('canvas'), get, n, { marks: c.markers, centre: c.pre });
+      el.onclick = () => { selected = c.id; renderClips(); renderDetail(); };
+    });
+    if (list.length > clipLimit) {
+      const more = document.createElement('button'); more.type = 'button'; more.textContent = 'Show ' + Math.min(48, list.length - clipLimit) + ' more of ' + (list.length - clipLimit);
+      more.style.gridColumn = '1 / -1'; more.onclick = () => { clipLimit += 48; renderClips(); }; $('clips').appendChild(more);
+    }
+  }
+  function renderDetail() {
+    const c = clips.find(x => x.id === selected);
+    $('btnDelClip').disabled = !c;
+    if (!c) { prep($('detail')); $('detailInfo').textContent = 'none selected'; $('detailFeat').textContent = ''; return; }
+    const { n, get } = clipGetter(c);
+    plotWindow($('detail'), get, n, { labels: true, marks: c.markers, centre: c.pre });
+    const f = features(c);
+    $('detailInfo').textContent = `${c.label || 'unlabelled'} · ${Math.round(n * 1000 / c.hz)} ms · ${c.source}`;
+    $('detailFeat').textContent = `shock ${f[0].toFixed(1)} g · twist ${f[3].toFixed(0)} °/s · turn before ${f[6].toFixed(1)}° · after ${f[7].toFixed(1)}° · free fall ${f[8].toFixed(0)} ms · tilt ${f[12].toFixed(0)}°`;
+  }
+  function renderCounts() {
+    const rows = classes.map(k => { const cs = clips.filter(c => c.label === k); return [k, cs.length, new Set(cs.map(c => c.tool)).size, outcome(k)]; });
+    $('counts').innerHTML = '<tr><th>class</th><th>clips</th><th>pods</th><th>counts as</th></tr>' +
+      rows.map(r => `<tr><td><i style="display:inline-block;width:10px;height:10px;background:${colorOf(r[0])};margin-right:6px"></i>${esc(r[0])}</td><td class="${r[1] < 30 ? 'miss' : ''}">${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join('') +
+      `<tr><td>unlabelled</td><td>${clips.filter(c => !c.label).length}</td><td></td><td></td></tr>`;
+  }
+  function fillFeatSelects() {
+    const o = FEAT.map((f, i) => `<option value="${i}">${esc(f)}</option>`).join('');
+    $('fx').innerHTML = o; $('fy').innerHTML = o; $('fx').value = 3; $('fy').value = 0;
+    $('fx').onchange = $('fy').onchange = renderScatter;
+  }
+  function renderScatter() {
+    const { g, W, H } = prep($('scatter')), fx = +$('fx').value, fy = +$('fy').value;
+    const pts = clips.filter(c => c.label).map(c => { const f = features(c); return [f[fx], f[fy], c.label]; });
+    $('scLegend').innerHTML = classes.filter(k => pts.some(p => p[2] === k)).map(k => `<span><i style="background:${colorOf(k)}"></i>${esc(k)}</span>`).join('');
+    if (!pts.length) { g.fillStyle = 'rgba(23,22,20,.45)'; g.font = '12px "IBM Plex Mono",monospace'; g.fillText('Label some clips to see how the classes separate.', 10, 24); return; }
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const L = 44, B = 22, X = v => L + (v - x0) / ((x1 - x0) || 1) * (W - L - 10), Y = v => H - B - (v - y0) / ((y1 - y0) || 1) * (H - B - 10);
+    g.fillStyle = 'rgba(23,22,20,.55)'; g.font = '11px "IBM Plex Mono",monospace';
+    g.fillText(x0.toFixed(1), L, H - 6); g.fillText(x1.toFixed(1), W - 50, H - 6); g.fillText(y1.toFixed(1), 4, 16); g.fillText(y0.toFixed(1), 4, H - B);
+    pts.forEach(p => { g.fillStyle = colorOf(p[2]); g.globalAlpha = .85; g.beginPath(); g.arc(X(p[0]), Y(p[1]), 3.5, 0, 7); g.fill(); });
+    g.globalAlpha = 1;
+  }
+
+  // ------------------------------------------------------------------ dataset import/export
+  function download(name, obj) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(obj)], { type: 'application/json' }));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  }
+  const stampName = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  $('btnExport').onclick = () => download('clickconfirm-dataset-' + stampName() + '.json', { format: 'clickconfirm-dataset', version: 1, classes, clips: clips.map(toStore) });
+  $('fileImport').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      const j = JSON.parse(await f.text()); if (j.format !== 'clickconfirm-dataset') throw new Error('not a ClickConfirm dataset');
+      const ids = new Set(clips.map(c => c.id)); let n = 0;
+      (j.classes || []).forEach(k => { if (!classes.includes(k)) classes.push(k); }); saveClasses();
+      j.clips.forEach(o => { if (ids.has(o.id)) return; const c = fromStore(o); c.pred = model ? predict(c) : undefined; clips.push(c); put(c); n++; });
+      clips.sort((a, b) => a.t - b.t);
+      setState('Imported ' + n + ' new clips.', 'ok'); renderClasses(); renderClips(); renderCounts(); renderScatter();
+    } catch (err) { setState('Import failed: ' + err.message, 'bad'); }
+    e.target.value = '';
+  };
+  let clearArmed = 0;
+  $('btnClearAll').onclick = () => {
+    if (Date.now() - clearArmed > 4000) { clearArmed = Date.now(); setState('Tap Delete all again within 4 s to delete every clip in this browser. Export first.', 'bad'); return; }
+    clips.splice(0).forEach(c => del(c.id)); selected = null; model = null; $('btnModel').disabled = true;
+    renderClasses(); renderClips(); renderDetail(); renderCounts(); renderScatter(); setState('All clips deleted.', '');
+  };
+  $('btnModel').onclick = () => model && download('clickconfirm-model-' + stampName() + '.json', Object.assign({ format: 'clickconfirm-model' }, model));
+  $('btnDelClip').onclick = () => {
+    const i = clips.findIndex(c => c.id === selected); if (i < 0) return;
+    del(clips[i].id); clips.splice(i, 1); selected = null; renderClips(); renderDetail(); renderCounts(); renderScatter(); renderClasses();
+  };
+  $('btnAddClass').onclick = () => {
+    const k = $('newClass').value.trim().toLowerCase(); if (!k || classes.includes(k)) return;
+    classes.push(k); saveClasses(); $('newClass').value = ''; renderClasses(); renderCounts();
+  };
+  $('filter').onchange = () => { clipLimit = 48; renderClips(); };
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    const n = parseInt(e.key, 10); if (n >= 1 && n <= 9 && classes[n - 1]) applyClass(classes[n - 1]);
+    if (e.key === 'Delete' || e.key === 'Backspace') $('btnDelClip').click();
+  });
+
+  // ------------------------------------------------------------------ wiring
+  $('btnUsb').onclick = usbConnect;
+  $('btnDemo').onclick = startDemo;
+  $('btnStop').onclick = stopAll;
+  $('btnTrain').onclick = trainAndTest;
+  $('btnDemoFill').onclick = () => {
+    for (let r = 0; r < 20; r++) classes.forEach(k => demoDo(k));       // interleaved, like real use
+    demoFast = true; setState('Simulating 20 of each class at high speed…', 'ok');
+  };
+  window.addEventListener('resize', () => { drawLive(); renderDetail(); renderScatter(); renderClips(); });
+  fillFeatSelects(); drawLive();
+  window.__lab = { clips, demoDo, features, get model() { return model; }, trainAndTest, startDemo, pushSample, get busy() { return demoQueue.length; } };
+  loadAll();
+})();
+</script>
+</body>
+</html>
