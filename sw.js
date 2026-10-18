@@ -1,6 +1,6 @@
 // ClickConfirm service worker: makes the page installable and usable with no signal.
 // Network first, so a new index.html on GitHub shows up on the next open; the saved copy is only a fallback.
-const CACHE = 'clickconfirm-v39';
+const CACHE = 'clickconfirm-v39-1';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

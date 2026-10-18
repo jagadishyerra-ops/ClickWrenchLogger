@@ -276,6 +276,9 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <span class="row" style="gap:18px">
       <button class="primary" id="btnTrain" type="button">Train + test</button>
       <button class="text" id="btnModel" type="button" disabled>Export model</button>
+      <button id="btnSendModel" type="button" disabled title="store this model on the connected pod: it then counts clicks with it">Send model to pod</button>
+      <button class="text" id="btnRemoveModel" type="button" disabled style="color:var(--signal)" title="remove the model from the pod: it goes back to the fixed rules">Remove model from pod</button>
+      <span class="tag" id="podModel">pod model: —</span>
     </span>
   </div>
   <div id="trainOut"><p class="note">Training uses only labelled clips. It runs five rounds, each time holding back a fifth of the clips the model has never seen, so the scores below are what to expect on new movements, not a memory test. The pod's current fixed rules are scored on the same clips for comparison.</p></div>
@@ -438,6 +441,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
       if (!headerSeen) {                               // text until the "LAB1 ..." line
         const nl = b.indexOf(10, i); if (nl < 0) break;
         const line = new TextDecoder().decode(b.slice(i, nl)).trim(); i = nl + 1;
+        if (line.startsWith('MODEL') && modelWait) modelWait(line);
         if (line.startsWith('LAB1')) { parseHeader(line); headerSeen = true; }
         continue;
       }
@@ -467,7 +471,9 @@ input[type=range]{width:100%;accent-color:var(--ink)}
         if (markers.length > 400) markers.splice(0, 100);
         i += 11;
       } else if (t === 10 || t === 13 || (t >= 32 && t < 127)) {          // stray text line from the pod
-        const nl = b.indexOf(10, i); if (nl < 0) break; i = nl + 1;
+        const nl = b.indexOf(10, i); if (nl < 0) break;
+        const line = new TextDecoder().decode(b.slice(i, nl)).trim(); i = nl + 1;
+        if (line.startsWith('MODEL') && modelWait) modelWait(line);
       } else i++;
     }
     rxBuf = b.slice(i);
@@ -475,7 +481,8 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   function parseHeader(line) {
     const kv = Object.fromEntries(line.split(/\s+/).slice(1).map(p => p.split('=')));
     meta = { hz: +kv.hz || 1000, accLsb: +kv.acc_lsb || 0.000488, gyrLsb: +kv.gyr_lsb || 0.07, axis: +kv.axis || 0, sign: +kv.sign || 1,
-             tool: +kv.tool || 0, impact: +kv.impact || 3, jump: +kv.jump || 40, dom: +kv.dom || 1.5, mic: +kv.mic || 0, batt: 'batt' in kv ? 1 : 0, fw: kv.fw || '' };
+             tool: +kv.tool || 0, impact: +kv.impact || 3, jump: +kv.jump || 40, dom: +kv.dom || 1.5, mic: +kv.mic || 0, batt: 'batt' in kv ? 1 : 0, fw: kv.fw || '', model: 'model' in kv ? kv.model : null };
+    showPodModel();
     base = [0, 0, 1]; sndBg = 0;
     if (meta.batt) showBatt(+kv.batt || 0, kv.pct === undefined ? 255 : +kv.pct); else showBatt(-1);
     renderMode();
@@ -506,7 +513,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
       try { await port.close(); } catch (e) {}
       port = null;
     }
-    $('btnStop').disabled = true; $('btnManual').disabled = true; $('liveInfo').textContent = 'no stream'; showBatt(-1); $('batt').textContent = 'battery —';
+    $('btnStop').disabled = true; $('btnManual').disabled = true; $('liveInfo').textContent = 'no stream'; showPodModel(); showBatt(-1); $('batt').textContent = 'battery —';
     setState('Stopped.', '');
   }
 
@@ -932,7 +939,8 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     try { ({ pred, net } = await trainInWorker(X, Y, K, n => { $('trainOut').innerHTML = `<p class="note">Training… round ${n} of 6</p>`; })); }
     catch (err) { $('btnTrain').disabled = false; $('trainOut').innerHTML = '<p class="note" style="color:var(--signal)">Training failed: ' + esc(err.message) + '</p>'; return; }
     model = { version: 1, created: new Date().toISOString(), classes: used, features: FEAT, net, counts: Object.fromEntries(used.map(k => [k, lab.filter(c => c.label === k).length])),
-              counts_as: Object.fromEntries(used.map(k => [k, outcome(k)])) };
+              counts_as: Object.fromEntries(used.map(k => [k, outcome(k)])),
+              capture: { trigG: +$('trigG').value, trigD: +$('trigD').value, preMs: +$('preMs').value, quietMs: +$('postMs').value, maxMs: +$('maxMs').value } };
     clips.forEach(c => c.pred = predict(c));
     // scores
     const conf = used.map(() => used.map(() => 0)); Y.forEach((y, i) => conf[y][pred[i]]++);
@@ -956,7 +964,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
       ${used.map((k, r) => `<tr><td>${esc(k)}</td>${conf[r].map((v, c2) => `<td class="${v ? (r === c2 ? 'hit' : (outcome(used[r]) !== outcome(used[c2]) ? 'miss' : '')) : ''}">${v || '·'}</td>`).join('')}<td>${pct(conf[r][r], conf[r].reduce((a, b) => a + b, 0))}</td></tr>`).join('')}
       </table></div>
       <p class="note">Orange cells are mix-ups that change the outcome (click ↔ not a click, or drop missed). Mix-ups between two "ignored" classes, such as set down vs pegboard in, don't matter for counting. The final model is trained on all ${lab.length} clips; every clip card now also shows what it says.</p>`;
-    $('btnModel').disabled = false; $('btnTrain').disabled = false;
+    $('btnModel').disabled = false; $('btnTrain').disabled = false; showPodModel();
     renderClips();
     setState(`Model trained on ${lab.length} clips, ${K} classes. ${falseC ? falseC + ' false clicks in testing: add more of the confused movements, then train again.' : 'No false clicks in testing.'}`, falseC ? 'bad' : 'ok');
   }
@@ -1446,6 +1454,58 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     if (e.key === 'Delete' || e.key === 'Backspace') $('btnDelClip').click();
   });
 
+  // ------------------------------------------------------------------ send the trained model to the pod (firmware v3.9+)
+  // Same layout the pod's modelParse() reads: "CCM1", ver, nf, nh, nk, clickMask, 0,0,0, capture settings (5 floats),
+  // mean, std, W1, b1, W2, b2 (float32 little endian), crc32 of everything before it.
+  function crc32(bytes) { let c = 0xFFFFFFFF; for (let i = 0; i < bytes.length; i++) { c ^= bytes[i]; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1)); } return (c ^ 0xFFFFFFFF) >>> 0; }
+  function modelPayload(m) {
+    const net = m.net, K = net.b2.length, nf = 16, nh = 16;
+    if (net.mean.length !== nf || net.W1.length !== nh || K < 2 || K > 4) throw new Error('this model has an unexpected shape');
+    const mask = m.classes.reduce((a, k, i) => outcome(k) === 'click' ? a | (1 << i) : a, 0);
+    if (!mask) throw new Error('the model has no click class');
+    const cap = m.capture || { trigG: +$('trigG').value, trigD: +$('trigD').value, preMs: +$('preMs').value, quietMs: +$('postMs').value, maxMs: +$('maxMs').value };
+    const size = 32 + 4 * (nf + nf + nh * nf + nh + K * nh + K) + 4, buf = new ArrayBuffer(size), dv = new DataView(buf), u8 = new Uint8Array(buf);
+    let o = 0; 'CCM1'.split('').forEach(ch => dv.setUint8(o++, ch.charCodeAt(0)));
+    [1, nf, nh, K, mask, 0, 0, 0].forEach(v => dv.setUint8(o++, v));
+    const f = v => { dv.setFloat32(o, v, true); o += 4; };
+    [cap.trigG, cap.trigD, cap.preMs, cap.quietMs, cap.maxMs].forEach(f);
+    net.mean.forEach(f); net.std.forEach(v => f(v || 1)); net.W1.forEach(r => r.forEach(f)); net.b1.forEach(f); net.W2.forEach(r => r.forEach(f)); net.b2.forEach(f);
+    const crc = crc32(u8.subarray(0, size - 4)); dv.setUint32(size - 4, crc, true);
+    return { hex: Array.from(u8, b => b.toString(16).padStart(2, '0')).join(''), crc, size };
+  }
+  let modelWait = null;
+  function showPodModel() {
+    const has = meta.model && meta.model !== '00000000', usb = !!port && source === 'usb';
+    $('podModel').textContent = !usb ? 'pod model: connect a pod (USB)' : meta.model === null ? 'pod model: firmware too old (needs v3.9)' : has ? `pod model: loaded (${meta.model}) — the pod counts with it` : 'pod model: none — the pod uses its fixed rules';
+    $('btnSendModel').disabled = !(usb && model && meta.model !== null);
+    $('btnRemoveModel').disabled = !(usb && has);
+  }
+  async function podCommand(text, expectReply) {
+    const w = port.writable.getWriter();
+    try {
+      const reply = expectReply ? new Promise(res => { const t = setTimeout(() => { modelWait = null; res('MODEL ERROR no answer from the pod'); }, 12000); modelWait = line => { clearTimeout(t); modelWait = null; res(line); }; }) : null;
+      const enc = new TextEncoder().encode(text);
+      for (let i = 0; i < enc.length; i += 256) { await w.write(enc.slice(i, i + 256)); await new Promise(r => setTimeout(r, 15)); }
+      return reply ? await reply : '';
+    } finally { w.releaseLock(); }
+  }
+  async function modelToPod(remove) {
+    if (!port) return;
+    let pl = null;
+    if (!remove) { try { pl = modelPayload(model); } catch (e) { setState('Cannot send this model: ' + e.message, 'bad'); return; } }
+    $('btnSendModel').disabled = $('btnRemoveModel').disabled = true;
+    setState(remove ? 'Removing the model from the pod…' : `Sending the model to the pod (${pl.size} bytes)…`, '');
+    await podCommand('Q');                                    // stop the stream so the pod can listen
+    await new Promise(r => setTimeout(r, 400));
+    const ans = await podCommand('M' + (remove ? '' : pl.hex) + '\n', true);
+    headerSeen = false; await podCommand('L');               // restart the stream; the new header shows the model
+    if (/^MODEL (OK|REMOVED)/.test(ans)) setState(remove ? 'Model removed: the pod counts with its fixed rules again.' : `Model stored on the pod (${ans.replace(/^MODEL OK /, '')}). The pod now counts clicks with it, about half a second after each click. Check it here: real clicks should show "pod CLICK".`, 'ok');
+    else setState('The pod did not accept the model: ' + ans.replace(/^MODEL (ERROR )?/, '') + '. Is the pod on firmware v3.9?', 'bad');
+    showPodModel();
+  }
+  $('btnSendModel').onclick = () => modelToPod(false);
+  $('btnRemoveModel').onclick = () => modelToPod(true);
+
   // ------------------------------------------------------------------ wiring
   $('btnUsb').onclick = usbConnect;
   $('btnDemo').onclick = startDemo;
@@ -1457,7 +1517,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   };
   window.addEventListener('resize', () => { drawLive(); renderDetail(); renderScatter(); renderClips(); });
   fillFeatSelects(); drawLive(); renderMode();
-  window.__lab = { useFolder, listFiles, clipsCSV, samplesCSV, clipsFromCSV, get fileRows() { return fileRows; }, setMode, get mode() { return mode; }, setLabel, setSoundRef, soundDecide, isDrop, teachCheck, teachMeasure, clips, shocksOf, shockMarks, setPaused, get paused() { return paused; }, get total() { return total; }, demoDo, features, soundOf, get soundTpls() { return soundTpls; }, get model() { return model; }, trainAndTest, startDemo, pushSample, get busy() { return demoQueue.length; } };
+  window.__lab = { netProb, modelPayload, get model() { return model; }, get meta() { return meta; }, useFolder, listFiles, clipsCSV, samplesCSV, clipsFromCSV, get fileRows() { return fileRows; }, setMode, get mode() { return mode; }, setLabel, setSoundRef, soundDecide, isDrop, teachCheck, teachMeasure, clips, shocksOf, shockMarks, setPaused, get paused() { return paused; }, get total() { return total; }, demoDo, features, soundOf, get soundTpls() { return soundTpls; }, trainAndTest, startDemo, pushSample, get busy() { return demoQueue.length; } };
   loadAll();
 })();
 </script>
