@@ -487,7 +487,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     if (meta.batt) showBatt(+kv.batt || 0, kv.pct === undefined ? 255 : +kv.pct); else showBatt(-1);
     renderMode();
     $('liveInfo').textContent = `pod CC-${String(meta.tool).padStart(3, '0')} · fw ${meta.fw || 'old'} · ${Math.round(meta.hz)} samples/s · drive axis ${'XYZ'[meta.axis]}${meta.sign > 0 ? '+' : '−'} · ${meta.mic ? 'sound on' : 'NO SOUND'}`;
-    setState('Streaming from CC-' + String(meta.tool).padStart(3, '0') + '. Every movement over the capture threshold becomes a clip.' +
+    setState('Streaming from CC-' + String(meta.tool).padStart(3, '0') + '. While the Lab streams, the pod does not count clicks for the phone (press Stop to count). Pick a mode to record clips.' +
       (meta.mic ? '' : meta.batt ? ' Microphone did not start: no sound this session.' : ' Old firmware: update to v3.8 for sound and battery.'), meta.mic || !meta.batt ? 'ok' : 'bad');
   }
   // ------------------------------------------------------------------ battery (header)
@@ -1499,7 +1499,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     await new Promise(r => setTimeout(r, 400));
     const ans = await podCommand('M' + (remove ? '' : pl.hex) + '\n', true);
     headerSeen = false; await podCommand('L');               // restart the stream; the new header shows the model
-    if (/^MODEL (OK|REMOVED)/.test(ans)) setState(remove ? 'Model removed: the pod counts with its fixed rules again.' : `Model stored on the pod (${ans.replace(/^MODEL OK /, '')}). The pod now counts clicks with it, about half a second after each click. Check it here: real clicks should show "pod CLICK".`, 'ok');
+    if (/^MODEL (OK|REMOVED)/.test(ans)) setState(remove ? 'Model removed: the pod counts with its fixed rules again.' : `Model stored on the pod (${ans.replace(/^MODEL OK /, '')}). The pod now counts clicks with it, about half a second after each click. Check it here (real clicks should show "pod CLICK"), then press STOP before testing on the phone: while the Lab is streaming, the pod treats clicks as test clips and does not count them. The cable can stay plugged in.`, 'ok');
     else setState('The pod did not accept the model: ' + ans.replace(/^MODEL (ERROR )?/, '') + '. Is the pod on firmware v3.9?', 'bad');
     showPodModel();
   }

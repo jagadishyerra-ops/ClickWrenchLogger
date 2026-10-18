@@ -365,6 +365,7 @@ input[type=password],input[type=text]{font:600 24px var(--mono);padding:8px 12px
                  + (p.warn && p.warn.fault ? '<div class="meta" style="color:var(--signal);font-weight:600">SENSOR FAULT: not counting. Take out of use.</div>' : '')
                  + (p.warn && p.warn.orient ? '<div class="meta" style="color:var(--signal)">Twisting the wrong way: run Orient (Teach tab).</div>' : '')
                  + (p.warn && p.warn.mount ? '<div class="meta" style="color:var(--signal)">Clicks weaker than when taught: check the clamp, re-teach.</div>' : '')
+                 + (p.warn && p.warn.lab ? '<div class="meta" style="color:var(--signal);font-weight:600">LAB SESSION (USB): clicks are NOT counted. Press Stop in the Lab or unplug the cable.</div>' : '')
                  + (p.warn && p.warn.polling ? '<div class="meta">Sensor running in fallback mode (pod self-test). Tell engineering.</div>' : '')
                  + (p.warn && p.warn.overrun ? '<div class="meta">Sensor data overflowed repeatedly (samples lost). Tell engineering.</div>' : '')
                  + (p.dropped ? `<div class="meta" style="color:var(--signal);font-weight:600">Wrench was DROPPED. Check its calibration, then a supervisor clears the flag:</div>
@@ -604,12 +605,13 @@ input[type=password],input[type=text]{font:600 24px var(--mono);padding:8px 12px
     if (e.type === 4 || e.type === 5) { Teach.onSample(key, e); return; }    // teach samples never count
     if (e.type !== 2) return;
     p.teach = !!(e.flags & 2); p.nearlyFull = !!(e.flags & 4); p.logFail = !!(e.flags & 8); p.dropped = !!(e.flags & 16);
-    const w = { fault: !!(e.flags & 32), battLow: !!(e.flags & 64), battCrit: !!(e.flags & 128), mount: !!(e.rsv & 1), polling: !!(e.rsv & 2), orient: !!(e.rsv & 4), overrun: !!(e.rsv & 8) };
+    const w = { fault: !!(e.flags & 32), battLow: !!(e.flags & 64), battCrit: !!(e.flags & 128), mount: !!(e.rsv & 1), polling: !!(e.rsv & 2), orient: !!(e.rsv & 4), overrun: !!(e.rsv & 8), lab: !!(e.rsv & 16) };
     const was = p.warn || {}; p.warn = w;
     if (w.fault && !was.fault) { setState(name + ': SENSOR FAULT. It is not counting. Take the wrench out of use.', 'bad'); if (navigator.vibrate) navigator.vibrate([600, 200, 600]); }
     else if (w.orient && !was.orient) setState(name + ' twisted the wrong way on 3 clicks: it may be mounted backwards. Run Orient on the Teach tab.', 'bad');
     else if (w.battCrit && !was.battCrit) setState(name + ' battery CRITICAL: charge it now.', 'bad');
     else if (w.mount && !was.mount) setState(name + ': clicks are much weaker than when taught. Check the clamp, then re-teach.', 'bad');
+    else if (w.lab && !was.lab) setState(name + ' is in a Lab session (USB): clicks are not counted. Press Stop in the Lab or unplug the cable.', 'bad');
     else if (w.battLow && !was.battLow) setState(name + ' battery low: charge it at the end of the shift.', 'amber');
     // heartbeat carries the low 16 bits of the newest click number: fetch anything this phone has not got
     if (!p.syncing && !p.teach && !p.oldFw && e.seq !== ((store.seen[key] || 0) & 0xFFFF)) startSync(key);
