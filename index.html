@@ -1,0 +1,1017 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#171614">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>ClickConfirm Test App</title>
+<!--
+  ClickConfirm Test App v3 (prototype receiver + teach mode, on a phone)
+  - Collects clicks from ClickConfirm pods over Bluetooth (Web Bluetooth).
+  - Pods confirm clicks themselves (green) and keep every click in their own flash.
+    This page receives clicks live when in range, and pulls anything it missed when a pod reconnects.
+  - Clicks are matched to the engine serial that was set at the time; everything is kept on this phone
+    until cleared, and exports to CSV.
+  Runs in Chrome on Android, Windows, macOS, ChromeOS. Not in iPhone Safari.
+  Must be opened from https:// (e.g. GitHub Pages) or http://localhost.
+  Matches pod firmware ClickConfirm_Pod.ino v3.7 (service ccc11000-210f-6ca1-904e-7d2b551e8a3c).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Paper, ink, signal orange. Green appears only when a bolt is actually counted. */
+:root{
+  --paper:#EDE8DF; --paper-2:#E3DDD2; --ink:#171614; --ink-2:rgba(23,22,20,.62); --ink-3:rgba(23,22,20,.38);
+  --rule:rgba(23,22,20,.16); --signal:#E2481C; --go:#1E6B45;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  --grot:"Archivo","Arial Narrow",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--grot);font-stretch:100%;-webkit-font-smoothing:antialiased}
+body{padding:max(18px,env(safe-area-inset-top)) 18px max(28px,env(safe-area-inset-bottom))}
+.wrap{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:0}
+.mono,.tag,label,.meta,td,th,.chip,.kv,.note,.steps{font-family:var(--mono)}
+
+/* masthead */
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding-bottom:14px;border-bottom:3px solid var(--ink)}
+.mark{font-weight:800;font-stretch:125%;font-size:15px;letter-spacing:.14em;text-transform:uppercase;margin:0}
+.mark-sub{font:500 11px var(--mono);letter-spacing:.08em;color:var(--ink-2);text-transform:uppercase;margin-top:4px}
+.tag{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2)}
+
+/* buttons: ink blocks, square shoulders */
+button{font-family:var(--grot);font-weight:700;font-stretch:112%;font-size:14px;letter-spacing:.06em;text-transform:uppercase;
+  border-radius:2px;border:2px solid var(--ink);background:transparent;color:var(--ink);padding:12px 16px;min-height:48px;cursor:pointer}
+button.primary{background:var(--ink);color:var(--paper)}
+button.warn{border-color:var(--signal);color:var(--signal)}
+button.text{border:0;padding:12px 0;min-height:44px;text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:2px}
+button:disabled{opacity:.3;cursor:default}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--signal);outline-offset:2px}
+button:active:not(:disabled){transform:translateY(1px)}
+
+.err{border-left:6px solid var(--signal);padding:12px 14px;margin-top:16px;font:500 14px/1.45 var(--mono);background:var(--paper-2)}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+
+/* tabs: two words, one underline */
+.tabs{display:flex;gap:28px;padding-top:6px}
+.tabs button{border:0;padding:14px 0 10px;min-height:52px;font-size:30px;font-weight:800;font-stretch:75%;letter-spacing:.01em;
+  color:var(--ink-3);border-bottom:4px solid transparent;border-radius:0}
+.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--ink)}
+
+/* count hero */
+.hero{display:grid;grid-template-columns:1fr auto;align-items:end;gap:8px 20px;padding:26px 0 18px}
+.count{font-weight:800;font-stretch:62%;font-size:clamp(132px,40vw,220px);line-height:.78;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.count small{font-size:.36em;font-stretch:75%;color:var(--ink-3);letter-spacing:0;margin-left:.08em}
+.hero .tag{grid-column:1/-1}
+.state{margin:0 -18px;padding:16px 18px;font:600 15px/1.35 var(--mono);letter-spacing:.02em;background:var(--paper-2);border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.state.ok{background:var(--go);color:#F3EFE7;border-color:var(--go)}
+.state.bad{background:var(--signal);color:#FFF6EF;border-color:var(--signal)}
+.state.amber{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+
+/* settings as ruled lines, not boxes */
+.lines{margin-top:22px;border-top:1px solid var(--ink)}
+.line{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:58px;border-bottom:1px solid var(--rule);font:500 15px var(--mono)}
+.line label{font-size:15px;color:var(--ink);display:flex;align-items:center;gap:12px;flex:1;min-height:56px;cursor:pointer}
+.line .hint{font-size:12px;color:var(--ink-2);display:block;margin-top:2px}
+input[type=number]{width:76px;font:600 22px var(--mono);text-align:center;padding:8px 6px;border:2px solid var(--ink);border-radius:2px;background:transparent;color:var(--ink)}
+input[type=checkbox]{appearance:none;-webkit-appearance:none;width:26px;height:26px;flex:none;margin:0;border:2px solid var(--ink);border-radius:2px;background:transparent;display:grid;place-content:center;cursor:pointer}
+input[type=checkbox]::after{content:"";width:12px;height:12px;background:var(--ink);transform:scale(0);transition:transform .08s}
+input[type=checkbox]:checked::after{transform:scale(1)}
+
+/* pods */
+h3.sec{display:flex;justify-content:space-between;align-items:baseline;margin:34px 0 0;padding-bottom:8px;border-bottom:1px solid var(--ink);
+  font-weight:800;font-stretch:75%;font-size:24px;letter-spacing:.01em;text-transform:uppercase}
+h3.sec .tag{font-weight:500;font-stretch:100%}
+.pods{display:flex;flex-direction:column}
+.pod{display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:center;padding:14px 0;border-bottom:1px solid var(--rule)}
+.pod .name{font:600 20px var(--mono);letter-spacing:.02em;display:flex;align-items:center}
+.pod .meta{font-size:13px;color:var(--ink-2);grid-column:1}
+.batt{display:flex;align-items:center;gap:8px;grid-column:1;margin:4px 0 2px;font:600 14px var(--mono)}
+.batt .bar{position:relative;width:64px;height:16px;border:2px solid currentColor;border-radius:2px}
+.batt .bar::after{content:"";position:absolute;right:-6px;top:3px;width:3px;height:6px;background:currentColor}
+.batt .bar i{position:absolute;left:1px;top:1px;bottom:1px;background:currentColor}
+.batt.ok{color:var(--go)} .batt.low{color:#B7791F} .batt.crit{color:var(--signal)} .batt.none{color:var(--ink-3)}
+.pod button{grid-column:2;grid-row:1/span 3}
+.dot{display:inline-block;width:10px;height:10px;margin-right:10px;background:var(--ink-3);border-radius:0}
+.dot.on{background:var(--go)} .dot.off{background:var(--signal)}
+.badge{font:600 11px var(--mono);letter-spacing:.08em;margin-left:10px;padding:3px 6px;border:1.5px solid var(--ink);text-transform:uppercase}
+.empty{font:14px var(--mono);color:var(--ink-3);padding:14px 0}
+
+/* log */
+.log{max-height:52vh;overflow:auto;margin:0 -18px;padding:0 18px}
+table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:9px 12px 9px 0;border-bottom:1px solid var(--rule);white-space:nowrap}
+th{position:sticky;top:0;background:var(--paper);color:var(--ink-2);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid var(--ink)}
+
+.note{font-size:13px;line-height:1.6;color:var(--ink-2);margin:28px 0 0;max-width:62ch}
+.note b{color:var(--ink);font-weight:600}
+footer.fn{margin-top:40px;padding-top:12px;border-top:3px solid var(--ink);display:grid;grid-template-columns:auto 1fr;gap:14px}
+footer.fn .num{font-weight:800;font-stretch:62%;font-size:44px;line-height:.85;color:var(--signal)}
+
+/* teach */
+.teachhead{display:flex;flex-direction:column-reverse;gap:22px;padding:22px 0 16px}
+.teachhead label{align-self:flex-start}
+.steps{display:flex;flex-direction:column;gap:10px}
+.stepnum{font-family:var(--grot);display:flex;align-items:baseline;gap:10px}
+.stepnum b{font-weight:800;font-stretch:62%;font-size:64px;line-height:.8;color:var(--signal);font-variant-numeric:tabular-nums}
+.stepnum span{font-weight:800;font-stretch:75%;font-size:30px;text-transform:uppercase;white-space:nowrap}
+.stepnum i{font:500 12px var(--mono);font-style:normal;color:var(--ink-2);letter-spacing:.08em}
+.segs{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.segs i{height:6px;background:var(--rule)} .segs i.done{background:var(--ink)} .segs i.on{background:var(--signal)}
+select{font:600 16px var(--mono);padding:10px 12px;border-radius:2px;border:2px solid var(--ink);background:transparent;color:var(--ink)}
+label{font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:10px;letter-spacing:.06em;text-transform:uppercase}
+#teachBody{border-top:1px solid var(--ink);padding-top:22px}
+h2{font-weight:800;font-stretch:75%;font-size:34px;line-height:1;margin:0 0 14px;text-transform:uppercase;letter-spacing:.005em}
+.kv{display:grid;grid-template-columns:auto 1fr auto;gap:0;font-size:15px;font-variant-numeric:tabular-nums;margin:6px 0 18px;border-top:1px solid var(--rule)}
+.kv>div{padding:10px 18px 10px 0;border-bottom:1px solid var(--rule)}
+.kv div:nth-child(3n+1){color:var(--ink-2)} .kv div:nth-child(3n+2){font-weight:600}
+.kv div:nth-child(3n){color:var(--ink-3);text-align:right}
+.tally{font-weight:800;font-stretch:62%;font-size:clamp(110px,32vw,170px);line-height:.8;font-variant-numeric:tabular-nums}
+.tally small{font-size:.32em;font-stretch:75%;color:var(--ink-3)}
+ul.do{margin:16px 0 18px;padding:0;list-style:none;font:15px/1.5 var(--mono);counter-reset:d}
+ul.do li{padding:8px 0 8px 34px;border-bottom:1px solid var(--rule);position:relative;counter-increment:d}
+ul.do li::before{content:counter(d,decimal-leading-zero);position:absolute;left:0;color:var(--signal);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:6px 14px}
+.chip{font-size:12px;padding:3px 0;color:var(--ink);border-bottom:2px solid var(--ink-3)}
+.chip.ok{border-bottom-color:var(--go)} .chip.bad{color:var(--signal);border-bottom-color:var(--signal)} .chip.mute{color:var(--ink-3);border-bottom-color:var(--rule)}
+.verdict{font:600 15px/1.45 var(--mono);padding:4px 0 4px 16px;margin:14px 0;border-left:6px solid var(--ink)}
+.verdict.ok{border-left-color:var(--go);color:var(--go)} .verdict.bad{border-left-color:var(--signal);color:var(--signal)}
+canvas{width:100%;height:300px;display:block;margin:6px 0 8px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}
+input[type=password],input[type=text]{font:600 24px var(--mono);padding:8px 12px;border-radius:2px;border:2px solid var(--ink);background:transparent;color:var(--ink);width:140px;letter-spacing:.3em}
+#teachBody .row{margin-top:8px}
+.feedhead{display:flex;justify-content:space-between;align-items:center;margin-top:36px;border-top:1px solid var(--ink);padding-top:6px}
+.engine{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end;padding:22px 0 0}
+.engine label{grid-column:1/-1}
+#engine{width:100%;font:600 26px var(--mono);letter-spacing:.06em;padding:10px 12px;border:2px solid var(--ink);border-radius:2px;background:transparent;color:var(--ink);text-transform:uppercase}
+#engine:placeholder-shown{border-style:dashed}
+#engine::placeholder{color:var(--ink-3);letter-spacing:.02em;text-transform:none;font-weight:500;font-size:18px}
+.scan{position:fixed;inset:0;background:var(--ink);z-index:50;display:flex;flex-direction:column}
+.scan[hidden]{display:none}
+.scan video{flex:1;width:100%;object-fit:cover;min-height:0}
+.scan .aim{position:absolute;left:10%;right:10%;top:38%;height:22%;border:3px solid var(--signal);pointer-events:none}
+.scan .bar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px max(18px,env(safe-area-inset-bottom));color:var(--paper);font:500 14px var(--mono)}
+.scan .bar button{border-color:var(--paper);color:var(--paper)}
+@media (max-width:420px){ .tabs button{font-size:26px} h2{font-size:28px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <p class="mark">ClickConfirm</p>
+      <div class="mark-sub">Station test rig · collects clicks from the pods</div>
+    </div>
+    <button class="primary" id="btnConnect" type="button">Connect pod</button>
+  </header>
+
+  <div id="support" class="err" hidden></div>
+
+  <nav class="tabs" role="tablist">
+    <button type="button" role="tab" id="tabBtnCount" aria-selected="true">Count</button>
+    <button type="button" role="tab" id="tabBtnTeach" aria-selected="false">Teach</button>
+  </nav>
+
+  <div id="tabCount" style="display:flex;flex-direction:column">
+    <div class="engine">
+      <label for="engine">Engine serial</label>
+      <input id="engine" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Scan or type, then Enter">
+      <button type="button" id="btnScan">Scan</button>
+    </div>
+    <section class="hero" aria-live="polite">
+      <div class="count"><span id="count">0</span></div>
+      <div class="tag" id="countTag">Bolts counted · no engine set</div>
+    </section>
+    <div id="state" class="state">No pod linked. Tap Connect pod.</div>
+
+    <div class="lines">
+      <div class="line">
+        <span style="color:var(--ink-2);font-size:13px">Same engine, start again at zero</span>
+        <button id="btnReset" type="button">Restart count</button>
+      </div>
+    </div>
+
+    <h3 class="sec">Pods <span class="tag">clicks are saved on the pod</span></h3>
+    <section class="pods" id="pods"></section>
+
+    <h3 class="sec">Click log <span class="row" style="gap:18px"><button class="text" id="btnCsv" type="button">Export CSV</button><button class="text warn" id="btnClear" type="button" style="color:var(--signal)">Clear</button></span></h3>
+    <div class="log">
+      <table>
+        <thead><tr><th>Time</th><th>Engine</th><th>Pod</th><th>Click</th><th>Peak g</th><th>Jump °/s</th><th>Turn °</th><th>Via</th></tr></thead>
+        <tbody id="log"></tbody>
+      </table>
+    </div>
+
+    <footer class="fn" id="countNote">
+      <div class="num">64k</div>
+      <p class="note" style="margin:0">Green on the pod means it felt the click and saved it. This phone does not need to be in range. A pod holds about 65,000 clicks on its own. In range, each click shows here about half a second after it happens; out of range, clicks come across the next time the pod connects and are matched to the engine that was set at that moment. <b>Set the engine serial before the first bolt.</b> Clicks stay on this phone until you clear them; export the CSV first.</p>
+    </footer>
+  </div><!-- /tabCount -->
+
+  <div id="tabTeach" hidden style="flex-direction:column">
+    <div class="teachhead">
+      <div class="steps" id="teachSteps"></div>
+      <label for="teachPod">Pod <select id="teachPod"></select></label>
+    </div>
+    <section id="teachBody"></section>
+    <div class="feedhead">
+      <div class="tag">Every shock this session · newest first</div>
+      <button class="text" type="button" id="btnTeachCsv">Export teach log</button>
+    </div>
+    <div class="chips" id="teachFeed" style="margin-top:10px"></div>
+    <footer class="fn">
+      <div class="num">15 min</div>
+      <p class="note" style="margin:0"><b>Engineers:</b> the click model itself is built in the <a href="lab.html" style="color:var(--ink)">Lab</a> (laptop, pod on USB). This tab only fine-tunes one wrench.<br><br>While teaching, the pod's red and green lights take turns, slowly, and it counts nothing. It blinks green and chirps once for every shock it records. Close this page, lose the link, or leave it 15 minutes, and the pod goes back to counting with its old thresholds.</p>
+    </footer>
+  </div><!-- /tabTeach -->
+</div>
+<div class="scan" id="scanBox" hidden>
+  <video id="scanVideo" playsinline muted></video>
+  <div class="aim"></div>
+  <div class="bar"><span id="scanMsg">Point at the engine serial barcode</span><button type="button" id="btnScanClose">Cancel</button></div>
+</div>
+
+<script>
+(() => {
+  const SVC = 'ccc11000-210f-6ca1-904e-7d2b551e8a3c';
+  const EVT = 'ccc11001-210f-6ca1-904e-7d2b551e8a3c';
+  const CTL = 'ccc11003-210f-6ca1-904e-7d2b551e8a3c';
+  const LOG = 'ccc11004-210f-6ca1-904e-7d2b551e8a3c';
+  const CMD = { SET_TIME: 6, LOG_SEND: 7, LOG_SYNCED: 8, CLEAR_DROP: 9 };
+  const REC_END = 0xFE;
+
+  const $ = id => document.getElementById(id);
+  const esc = v => String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const pods = new Map();          // Bluetooth device id -> live connection state (p.name = CC-017)
+  let wakeLock = null;
+  const hooked = new WeakSet();            // characteristics we already listen to (reconnects can hand back the same objects)
+  const hook = (chr, fn) => { if (!hooked.has(chr)) { hooked.add(chr); chr.addEventListener('characteristicvaluechanged', fn); } };
+
+  // ---------- phone-side store (IndexedDB: survives closing the page, holds years of clicks) ----------
+  // clicks: one row per pod record; meta: engine changes and count restarts (marks), supervisor notes,
+  // last click number pulled per pod (seen) and each pod's log ID (epoch).
+  // A click's identity is (pod log ID, click number): the log ID is random per pod log, so the same click can
+  // never be stored twice, even if Chrome hands the pod a new Bluetooth id.
+  let store = { clicks: [], marks: [], notes: [], seen: {}, epoch: {}, engine: '' };
+  const ck = (pid, ep, seq) => ep ? 'e' + ep + '#' + seq : 'p' + pid + '#' + seq;
+  const have = new Set();
+  let db = null, dirtyClicks = [], metaDirty = false, saveT = 0, storageOk = true;
+  function idbOpen() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('clickconfirm', 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore('clicks', { keyPath: 'id' }); r.result.createObjectStore('meta', { keyPath: 'k' }); };
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  }
+  const idbAll = (name) => new Promise((res, rej) => { const q = db.transaction(name).objectStore(name).getAll(); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+  async function loadStore() {
+    try {
+      db = await idbOpen();
+      const [clicks, meta] = await Promise.all([idbAll('clicks'), idbAll('meta')]);
+      const m = meta.find(x => x.k === 'meta');
+      if (m) Object.assign(store, { marks: m.marks || [], notes: m.notes || [], seen: m.seen || {}, epoch: m.epoch || {}, engine: m.engine || '' });
+      store.clicks = clicks;
+      if (!clicks.length && !m) {                       // first run of this version: bring over the old phone log
+        for (const k of ['clickconfirm-v4', 'clickconfirm-v3']) {
+          const j = JSON.parse(localStorage.getItem(k) || 'null');
+          if (j && j.clicks) { Object.assign(store, { marks: j.marks || [], notes: j.notes || [], engine: j.engine || '' });
+            store.clicks = j.clicks.map(c => Object.assign(c, { id: ck(c.pid || c.pod, c.ep, c.seq) })); dirtyClicks = store.clicks.slice(); metaDirty = true; break; }
+        }
+      }
+    } catch (e) { storageOk = false; }
+    store.clicks.sort((a, b) => (a.t || 0) - (b.t || 0));
+    store.clicks.forEach(c => have.add(c.id));
+    // ask Chrome to keep this site's storage even when the phone is short of space
+    try { if (navigator.storage && navigator.storage.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch (e) {}
+    if (dirtyClicks.length) flush();
+    if (!storageOk) setState('This browser blocked storage: clicks will be lost when the page closes. Export the CSV often.', 'bad');
+  }
+  function flush() {
+    if (!db) return;
+    const clicks = dirtyClicks; dirtyClicks = []; const meta = metaDirty; metaDirty = false;
+    try {
+      const tx = db.transaction(['clicks', 'meta'], 'readwrite');
+      clicks.forEach(c => tx.objectStore('clicks').put(c));
+      if (meta) tx.objectStore('meta').put({ k: 'meta', marks: store.marks, notes: store.notes, seen: store.seen, epoch: store.epoch, engine: store.engine });
+      tx.onerror = () => { dirtyClicks = clicks.concat(dirtyClicks); metaDirty = metaDirty || meta;
+        setState('Could not save to the phone (' + (tx.error && tx.error.name) + '). Export the CSV now.', 'bad'); };
+    } catch (e) { dirtyClicks = clicks.concat(dirtyClicks); metaDirty = true; }
+  }
+  // save(): meta changed. New clicks are queued by addClick. Written together, 300 ms later.
+  function save() { metaDirty = true; clearTimeout(saveT); saveT = setTimeout(flush, 300); }
+  const ready = loadStore().then(() => { $('engine').value = store.engine; renderAll(); });
+  const label = key => (pods.get(key) || {}).name || key;     // what people see: CC-017
+
+  // ---------- support checks ----------
+  if (!('bluetooth' in navigator)) {
+    $('support').hidden = false;
+    $('support').textContent = 'This browser has no Web Bluetooth. Use Chrome on Android or a Windows/Mac laptop, opened from an https:// address. iPhone Safari is not supported.';
+    $('btnConnect').disabled = true;
+  } else if (!window.isSecureContext) {
+    $('support').hidden = false;
+    $('support').textContent = 'Open this page from an https:// address (for example GitHub Pages) or http://localhost. Bluetooth is blocked on plain http and file pages.';
+  }
+
+  // ---------- helpers ----------
+  function setState(text, kind) { const s = $('state'); s.textContent = text; s.className = 'state' + (kind ? ' ' + kind : ''); }
+  function stamp(ms) { const d = ms ? new Date(ms) : new Date(); return d.toLocaleTimeString([], {hour12:false}); }
+  const fmtWhen = ms => { if (!ms) return 'time unknown'; const d = new Date(ms), now = new Date(); return (d.toDateString() === now.toDateString() ? '' : d.toLocaleDateString() + ' ') + stamp(ms); };
+  const n = v => Number(v).toLocaleString();
+
+  // engine in force at a moment = the latest ENGINE mark at or before it
+  function engineAt(ms) {
+    let e = '';
+    for (const m of store.marks) { if (m.t > ms) break; if (m.type === 'ENGINE') e = m.engine; }
+    return e;
+  }
+  // an engine's count = all its clicks since its last "Restart count" (scanning it again continues the count)
+  function countFor(e) {
+    if (!e) return 0;
+    let s = 0; for (const m of store.marks) if (m.type === 'RESTART' && m.engine === e) s = m.t;
+    return store.clicks.filter(c => (c.kind || 'click') === 'click' && c.t && c.t >= s && c.engine === e).length;
+  }
+  const countNow = () => countFor(store.engine);
+  function renderCount() {
+    $('count').textContent = countNow();
+    $('countTag').textContent = store.engine ? 'Bolts on ' + store.engine : 'Bolts counted · no engine set';
+  }
+
+  // LiPo voltage -> % (same table as the pod firmware v3.8)
+  function battPct(mv) {
+    const V = [3400, 3500, 3600, 3700, 3750, 3800, 3900, 4000, 4100, 4200], P = [0, 3, 8, 18, 30, 42, 62, 79, 90, 100];
+    if (mv <= V[0]) return 0;
+    for (let i = 1; i < V.length; i++) if (mv <= V[i]) return Math.round(P[i - 1] + (P[i] - P[i - 1]) * (mv - V[i - 1]) / (V[i] - V[i - 1]));
+    return 100;
+  }
+  function battHtml(p) {
+    if (!p.batt) return '<div class="batt none">Battery: waiting for the pod…</div>';
+    if (p.batt < 2500) return '<div class="batt none">USB power · no battery fitted</div>';
+    const pct = battPct(p.batt), w = p.warn || {};
+    const k = w.battCrit || pct < 5 ? 'crit' : w.battLow || pct < 20 ? 'low' : 'ok';
+    const txt = k === 'crit' ? 'CRITICAL: charge now' : k === 'low' ? 'Low: charge after the shift' : '';
+    return `<div class="batt ${k}" title="${(p.batt / 1000).toFixed(2)} V"><span class="bar"><i style="width:calc(${Math.max(3, pct)}% - 2px)"></i></span>${pct}%<span style="font-weight:500;font-size:12px">${txt || (p.batt / 1000).toFixed(2) + ' V'}</span></div>`;
+  }
+
+  function renderPods() {
+    if (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.dropcode !== undefined) return;   // don't wipe a code being typed
+    const el = $('pods'); el.innerHTML = pods.size ? '' : '<div class="empty">None linked yet. Power the pod, then Connect pod.</div>';
+    for (const [key, p] of pods) {
+      const name = p.name;
+      const ago = p.lastHeard ? Math.round((Date.now() - p.lastHeard) / 1000) + ' s ago' : '—';
+      const warn = (p.logFail ? '<div class="meta" style="color:var(--signal)">Pod cannot save clicks: flash fault. Do not use.</div>'
+                 : p.nearlyFull ? '<div class="meta" style="color:var(--signal)">Pod log nearly full: sync now.</div>' : '')
+                 + (p.warn && p.warn.fault ? '<div class="meta" style="color:var(--signal);font-weight:600">SENSOR FAULT: not counting. Take out of use.</div>' : '')
+                 + (p.warn && p.warn.orient ? '<div class="meta" style="color:var(--signal)">Twisting the wrong way: run Orient (Teach tab).</div>' : '')
+                 + (p.warn && p.warn.mount ? '<div class="meta" style="color:var(--signal)">Clicks weaker than when taught: check the clamp, re-teach.</div>' : '')
+                 + (p.warn && p.warn.polling ? '<div class="meta">Sensor running in fallback mode (pod self-test). Tell engineering.</div>' : '')
+                 + (p.warn && p.warn.overrun ? '<div class="meta">Sensor data overflowed repeatedly (samples lost). Tell engineering.</div>' : '')
+                 + (p.dropped ? `<div class="meta" style="color:var(--signal);font-weight:600">Wrench was DROPPED. Check its calibration, then a supervisor clears the flag:</div>
+                    <div class="row" style="grid-column:1/-1;margin-top:4px"><input type="password" inputmode="numeric" maxlength="5" placeholder="code" data-dropcode="${esc(key)}"
+                      style="font:600 18px var(--mono);width:110px;padding:8px;border:2px solid var(--ink);border-radius:2px;background:transparent;color:var(--ink);letter-spacing:.2em">
+                    <button type="button" class="warn" data-clear="${esc(key)}">Clear drop flag</button></div>` : '');
+      const d = document.createElement('div'); d.className = 'pod';
+      d.innerHTML = `<div class="name"><span class="dot ${p.connected ? 'on' : 'off'}"></span>${esc(name)}${p.teach ? '<span class="badge">TEACH · not counting</span>' : ''}</div>
+        <div class="meta">${p.connected ? 'Connected' : 'Out of range: pod keeps saving'} · last heard ${ago}</div>
+        ${battHtml(p)}
+        <div class="meta">On this phone up to click #${n(store.seen[key] || 0)}${p.syncing ? ' · syncing…' : p.lastSync ? ' · synced ' + stamp(p.lastSync) : ''}</div>${warn}`;
+      const b = document.createElement('button'); b.type = 'button';
+      if (!p.connected) { b.textContent = 'Reconnect'; b.onclick = () => connectDevice(p.device); }
+      else { b.textContent = 'Sync'; b.disabled = !!p.syncing; b.onclick = () => startSync(key); }
+      d.appendChild(b);
+      el.appendChild(d);
+    }
+    el.querySelectorAll('[data-clear]').forEach(btn => btn.onclick = () => clearDrop(btn.dataset.clear, el.querySelector(`[data-dropcode="${CSS.escape(btn.dataset.clear)}"]`).value));
+  }
+  async function clearDrop(key, code) {
+    const p = pods.get(key); if (!p || !p.connected) return; const name = p.name;
+    try {
+      const res = await ctl(p, CMD.CLEAR_DROP, 0, parseInt(code, 10) || 0);
+      if (res === 1) { setState('Wrong supervisor code. Drop flag not cleared.', 'bad'); return; }
+      if (res === 6) { setState('Too many wrong codes: the pod refuses codes for 1 minute.', 'bad'); return; }
+      if (res !== 0) { setState('Pod refused to clear the drop flag (code ' + res + ').', 'bad'); return; }
+      p.dropped = false; store.notes.push({ t: Date.now(), pod: name, type: 'DROP_CLEARED' }); save();
+      setState('Drop flag cleared on ' + name + '. Record the calibration check.', 'ok'); renderAll();
+    } catch (e) { setState('Could not reach ' + name + ': ' + e.message, 'bad'); }
+  }
+
+  function renderLog() {
+    const rows = store.clicks.map(c => ({ k: 'c', t: c.t || 0, c })).concat(store.marks.map(m => ({ k: 'm', t: m.t, m })));
+    rows.sort((a, b) => b.t - a.t || (b.c ? b.c.seq : 0) - (a.c ? a.c.seq : 0));
+    $('log').innerHTML = rows.slice(0, 300).map(r => r.k === 'm'
+      ? `<tr class="mark"><td>${fmtWhen(r.t)}</td><td>${esc(r.m.engine || '—')}</td><td colspan="6">${r.m.type === 'ENGINE' ? 'New engine' : 'Count restarted'}</td></tr>`
+      : r.c.kind === 'notcounted' ? `<tr><td>${fmtWhen(r.c.t)}</td><td>${esc(r.c.engine || '—')}</td><td>${esc(r.c.pod)}</td><td>${r.c.seq}</td><td class="s-PULLTHRU" colspan="3">NOT COUNTED · ${r.c.code === 2 ? 'wrong way' : 'weak ' + r.c.peak.toFixed(1) + ' g'}</td><td>${r.c.via}</td></tr>`
+      : r.c.kind === 'fault' ? `<tr><td>${fmtWhen(r.c.t)}</td><td>${esc(r.c.engine || '—')}</td><td>${esc(r.c.pod)}</td><td>${r.c.seq}</td><td class="s-PULLTHRU" colspan="3">${r.c.code === 2 ? 'WATCHDOG RESTART' : 'SENSOR FAULT'}</td><td>${r.c.via}</td></tr>`
+      : r.c.kind === 'drop' ? `<tr><td>${fmtWhen(r.c.t)}</td><td>${esc(r.c.engine || '—')}</td><td>${esc(r.c.pod)}</td><td>${r.c.seq}</td><td class="s-PULLTHRU" colspan="3">DROP · ${r.c.peak.toFixed(1)} g · fell ${r.c.ff} ms</td><td>${r.c.via}</td></tr>`
+      : `<tr><td>${fmtWhen(r.c.t)}</td><td>${esc(r.c.engine || '—')}</td><td>${esc(r.c.pod)}</td><td>${r.c.seq}</td><td>${r.c.peak.toFixed(2)}</td><td>${r.c.jump}</td>
+         <td class="${r.c.pt ? 's-PULLTHRU' : ''}">${r.c.rot.toFixed(1)}${r.c.pt ? ' pull' : ''}</td><td>${r.c.via}</td></tr>`).join('');
+  }
+  function renderAll() { renderCount(); renderPods(); renderLog(); }
+
+  // ---------- Bluetooth ----------
+  async function connect() {
+    try {
+      const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }, { namePrefix: 'CC-' }], optionalServices: [SVC] });
+      await connectDevice(device);
+    } catch (e) {
+      if (e && e.name !== 'NotFoundError') setState('Could not connect: ' + e.message, 'bad');
+    }
+  }
+  async function connectDevice(device, quiet) {
+    await ready;
+    const key = device.id, name = device.name || device.id;
+    if (!quiet) setState('Connecting to ' + name + '…', 'amber');
+    let p = pods.get(key);
+    if (!p) {
+      p = { device, name, ctlChr: null, ctl: null, teach: false, batt: 0, lastHeard: 0, connected: false,
+            q: Promise.resolve(), wait: null, syncing: false, buf: [], lastSync: 0, retry: 0, syncedT: 0 };
+      pods.set(key, p);
+      device.addEventListener('gattserverdisconnected', () => {
+        if (p.syncing) save();                                              // keep what the half-done sync brought
+        p.connected = false; p.teach = false; p.syncing = false; p.buf = []; p.sy = null; if (p.wait) { p.wait.rej(new Error('disconnected')); p.wait = null; }
+        renderPods(); Teach.onDisconnect(key);
+        setState(name + ' out of range. It keeps saving clicks; they arrive when it reconnects.', 'amber');
+        clearTimeout(p.retry); p.retry = setTimeout(function again() {           // quiet reconnect every 10 s
+          if (p.connected) return;
+          connectDevice(p.device, true).catch(() => { p.retry = setTimeout(again, 10000); });
+        }, 5000);
+      });
+    }
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    const evt = await svc.getCharacteristic(EVT);
+    hook(evt, ev => onEvent(key, ev.target.value));
+    await evt.startNotifications();
+    p.ctlChr = await svc.getCharacteristic(CTL);
+    hook(p.ctlChr, ev => onCtl(key, ev.target.value));
+    await p.ctlChr.startNotifications();
+    let logChr = null;
+    try { logChr = await svc.getCharacteristic(LOG); } catch (e) {}
+    if (!logChr) { setState(name + ' has old firmware. Upload ClickConfirm_Pod v3.7.', 'bad'); }
+    else {
+      hook(logChr, ev => onRecord(key, ev.target.value));
+      await logChr.startNotifications();
+    }
+    Teach.onCtl(key, await p.ctlChr.readValue());
+    p.connected = true; p.lastHeard = Date.now();
+    renderPods(); Teach.render();
+    if (logChr) {
+      await ctl(p, CMD.SET_TIME, Math.round(Date.now() / 1000)).catch(() => {});
+      startSync(key);
+    }
+    keepAwake();
+  }
+
+  // control writes are queued per pod, and each waits for the pod's reply
+  function ctl(p, cmd, val, pin) {
+    const run = () => new Promise((res, rej) => {
+      const b = new DataView(new ArrayBuffer(20));
+      b.setUint8(0, 1); b.setUint8(1, cmd); b.setUint16(2, pin || 0, true); b.setUint32(14, val >>> 0, true);
+      const to = setTimeout(() => { p.wait = null; rej(new Error('Pod did not answer')); }, 4000);
+      p.wait = { cmd, res: v => { clearTimeout(to); res(v); }, rej: e => { clearTimeout(to); rej(e); } };
+      p.ctlChr.writeValueWithResponse(b.buffer).catch(e => { clearTimeout(to); p.wait = null; rej(e); });
+    });
+    const next = p.q.then(run, run); p.q = next.catch(() => {}); return next;
+  }
+  function onCtl(key, dv) {
+    const p = pods.get(key);
+    if (p && p.sy && dv.byteLength >= 20 && dv.getUint8(19) === CMD.LOG_SEND) p.sy.ep = dv.getUint32(14, true) >>> 0;   // log ID of this sync
+    if (p && p.wait && dv.byteLength >= 20 && dv.getUint8(19) === p.wait.cmd && dv.getUint8(18) !== 2) { const w = p.wait; p.wait = null; w.res(dv.getUint8(1)); }
+    Teach.onCtl(key, dv);
+  }
+
+  // ---------- clicks from the pod ----------
+  function parseRec(dv) {
+    return { seq: dv.getUint32(0, true), unix: dv.getUint32(4, true), upMs: dv.getUint32(8, true), peak: dv.getUint16(12, true) / 100,
+             jump: dv.getInt16(14, true), rot: dv.getUint16(16, true) / 10, flags: dv.getUint8(18), boot: dv.getUint8(19) };
+  }
+  // time of a click in ms. Live: this phone's clock minus the pod's 0.5 s pull-through check (sub-second accurate).
+  // Synced: the pod's clock is whole seconds, so use the middle of that second.
+  function addClick(key, r, via, clock, tLive) {
+    const ep = store.epoch[key] || 0, k = ck(key, ep, r.seq), pod = label(key);
+    if (have.has(k)) return null;
+    let unix = r.unix;
+    if (!unix && clock && clock.unix && clock.boot === r.boot && clock.upMs >= r.upMs) unix = clock.unix - Math.round((clock.upMs - r.upMs) / 1000);
+    const t = tLive || (unix ? unix * 1000 + 500 : 0);
+    const drop = !!(r.flags & 8), fault = !!(r.flags & 16), nc = !!(r.flags & 32);
+    const c = { id: k, pod, pid: key, ep, seq: r.seq, t, kind: fault ? 'fault' : drop ? 'drop' : nc ? 'notcounted' : 'click',
+                code: fault ? r.jump : nc ? Math.round(r.rot * 10) : 0, peak: r.peak, jump: drop ? 0 : r.jump, ff: drop ? r.jump : 0, rot: r.rot,
+                pt: !drop && !!(r.flags & 1), wrapped: !!(r.flags & 4), boot: r.boot, via, engine: t ? engineAt(t) : '' };
+    have.add(k); store.clicks.push(c); dirtyClicks.push(c);   // order does not matter: the log and CSV sort their own rows
+    return c;
+  }
+  function onRecord(key, dv) {
+    if (dv.byteLength < 20) return;
+    const p = pods.get(key); const r = parseRec(dv), name = p.name;
+    p.lastHeard = Date.now();
+    if (r.flags === REC_END) { r.epoch = (dv.getUint16(12, true) | (dv.getUint16(16, true) << 16)) >>> 0; finishSync(key, r); return; }
+    if (p.syncing) { syncRecord(key, p, r); return; }
+    if (!(r.flags & 2)) return;
+    if (!store.epoch[key]) { if (!p.oldFw) startSync(key); return; }    // log ID not known yet: the sync brings this click with it
+    // live click (sent about 0.5 s after it happened, once the pull-through check is done)
+    const seen = store.seen[key] || 0;
+    const c = addClick(key, r, 'live', null, Date.now() - 530);
+    if (r.seq === seen + 1) { store.seen[key] = r.seq; markSynced(key); }
+    else if (r.seq > seen + 1) startSync(key);                      // missed some: fetch the gap
+    save();
+    if (c && c.kind === 'notcounted') {
+      setState(c.code === 2 ? name + ' twisted the WRONG way: not counted. Re-check that bolt; if it keeps happening, run Orient.'
+                            : 'Weak click on ' + name + ' (' + c.peak.toFixed(1) + ' g): NOT counted. Re-check that bolt.', 'bad');
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    } else if (c && c.kind === 'fault') {
+      setState(name + (c.code === 2 ? ' restarted itself after its program froze (watchdog). Clicks just before may be missing: re-check the last bolt.' : ': SENSOR FAULT recorded. It is not counting.'), 'bad');
+      if (navigator.vibrate) navigator.vibrate([600, 200, 600]);
+    } else if (c && c.kind === 'drop') {
+      setState(name + ' was DROPPED (' + c.peak.toFixed(0) + ' g impact after ' + c.ff + ' ms of free fall). Check its calibration; a supervisor clears the flag below.', 'bad');
+      if (navigator.vibrate) navigator.vibrate([400, 150, 400, 150, 400]);
+      p.dropped = true;
+    } else if (c) {
+      const cnt = countNow();
+      if (c.pt) setState('Pull-through on bolt ' + cnt + (c.engine ? ' of ' + c.engine : '') + ' (' + c.rot.toFixed(0) + '°): re-check it', 'bad');
+      else if (!c.engine) setState('Click #' + c.seq + ' saved on ' + name + ' · no engine set: scan one', 'amber');
+      else setState('Bolt ' + cnt + ' on ' + c.engine + ' · click #' + c.seq + ' · ' + name, 'ok');
+      if (navigator.vibrate) navigator.vibrate(c.pt ? [150, 80, 150] : 60);
+    }
+    renderAll();
+  }
+  function markSynced(key) {                // tell the pod, at most every 2 s, what this phone now holds
+    const p = pods.get(key); if (!p || !p.connected) return;
+    clearTimeout(p.syncedT);
+    p.syncedT = setTimeout(() => ctl(p, CMD.LOG_SYNCED, store.seen[key] || 0).catch(() => {}), 2000);
+  }
+  function startSync(key) {
+    const p = pods.get(key); if (!p || !p.connected || p.syncing) return;
+    p.syncing = true; p.buf = []; p.sy = { from: (store.seen[key] || 0) + 1, got: 0, added: 0, drops: 0, faults: 0, ncs: 0, noTime: 0 }; renderPods();
+    ctl(p, CMD.LOG_SEND, (store.seen[key] || 0) + 1).catch(() => { p.syncing = false; p.buf = []; p.sy = null; renderPods(); });
+  }
+  // Sync records are kept as they arrive, so a link lost half-way keeps what came in. Only records without a
+  // time (pod restarted before its clock was set) wait for the END record, which carries the pod's clock.
+  function tally(sy, c) { if (!c) return; if (c.kind === 'drop') sy.drops++; else if (c.kind === 'fault') sy.faults++; else if (c.kind === 'notcounted') sy.ncs++; else sy.added++; if (!c.t) sy.noTime++; }
+  function syncRecord(key, p, r) {
+    const sy = p.sy;
+    if (sy && sy.ep && !store.epoch[key]) store.epoch[key] = sy.ep;              // first sync with this pod: its log ID is known now
+    if (!sy || !sy.ep || sy.ep !== store.epoch[key]) { p.buf.push(r); return; }  // log ID changed or not confirmed: wait for END
+    if (r.seq >= sy.from) sy.got++;
+    if (r.unix && !p.buf.length) {
+      tally(sy, addClick(key, r, 'sync', null));
+      if (r.seq > (store.seen[key] || 0)) store.seen[key] = r.seq;             // the pod sends in order: older ones are gone
+      if (sy.got % 50 === 0) { save(); renderPods(); }
+    } else p.buf.push(r);
+  }
+  function finishSync(key, end) {
+    const p = pods.get(key); if (!p || !p.syncing) return;
+    const name = p.name;
+    // the pod's click log has a different ID: it was erased (or this is another pod's log). Start this pod afresh.
+    if (end.epoch && store.epoch[key] && store.epoch[key] !== end.epoch) {
+      store.epoch[key] = end.epoch; store.seen[key] = 0; p.syncing = false; p.buf = []; p.sy = null; save();
+      setState(name + "'s click log was erased on the pod. Earlier clicks stay on this phone; collecting its new log.", 'amber');
+      startSync(key); return;
+    }
+    if (!end.epoch) {                                   // firmware before v3.5 has no log ID: refuse rather than risk duplicates
+      p.syncing = false; p.buf = []; p.sy = null; p.oldFw = true; renderPods();
+      setState(name + ' runs old firmware. Upload ClickConfirm_Pod v3.7 to it; its clicks are not collected until then.', 'bad'); return;
+    }
+    store.epoch[key] = end.epoch;
+    const sy = p.sy || { from: (store.seen[key] || 0) + 1, got: 0, added: 0, drops: 0, faults: 0, ncs: 0, noTime: 0 };
+    const from = sy.from, clock = { unix: end.unix, upMs: end.upMs, boot: end.boot };
+    if (!p.sy) sy.got = p.buf.filter(r => r.seq >= from && r.seq <= end.seq).length;
+    for (const r of p.buf) tally(sy, addClick(key, r, 'sync', clock));
+    const { added, drops, faults, ncs, noTime } = sy;
+    const missing = Math.max(0, end.seq - from + 1 - sy.got);
+    if (end.seq > (store.seen[key] || 0)) store.seen[key] = end.seq;
+    p.syncing = false; p.buf = []; p.sy = null; p.lastSync = Date.now(); save();
+    ctl(p, CMD.LOG_SYNCED, store.seen[key]).catch(() => {});
+    if (added || missing || drops || faults || ncs) setState('Synced ' + added + ' click' + (added === 1 ? '' : 's') + ' from ' + name +
+      (drops ? ' · ' + drops + ' DROP' + (drops === 1 ? '' : 'S') + ' while out of range: check calibration' : '') +
+      (faults ? ' · ' + faults + ' FAULT' + (faults === 1 ? '' : 'S') + ' (sensor or restart): see the log' : '') +
+      (ncs ? ' · ' + ncs + ' not counted (weak or wrong way): re-check those bolts' : '') +
+      (missing ? ' · ' + missing + ' overwritten on the pod before syncing' : '') + (noTime ? ' · ' + noTime + ' without a time (pod restarted before syncing)' : ''), (missing || drops || faults || ncs) ? 'bad' : 'ok');
+    else if (!p.teach) setState(name + ' connected · all clicks synced', 'ok');
+    renderAll();
+  }
+
+  // ---------- heartbeat + teach traffic ----------
+  function parse(dv) {
+    return { ver: dv.getUint8(0), type: dv.getUint8(1), seq: dv.getUint16(2, true), tool: dv.getUint16(4, true),
+             peak: dv.getUint16(6, true) / 100, jump: dv.getInt16(8, true), batt: dv.getUint16(10, true),
+             extra: dv.getUint16(12, true), flags: dv.getUint8(14), rsv: dv.getUint8(15) };
+  }
+  function onEvent(key, dv) {
+    if (dv.byteLength < 16) return;
+    const p = pods.get(key); const e = parse(dv), name = p.name;
+    p.lastHeard = Date.now(); if (e.batt) p.batt = e.batt;
+    if (e.type === 4 || e.type === 5) { Teach.onSample(key, e); return; }    // teach samples never count
+    if (e.type !== 2) return;
+    p.teach = !!(e.flags & 2); p.nearlyFull = !!(e.flags & 4); p.logFail = !!(e.flags & 8); p.dropped = !!(e.flags & 16);
+    const w = { fault: !!(e.flags & 32), battLow: !!(e.flags & 64), battCrit: !!(e.flags & 128), mount: !!(e.rsv & 1), polling: !!(e.rsv & 2), orient: !!(e.rsv & 4), overrun: !!(e.rsv & 8) };
+    const was = p.warn || {}; p.warn = w;
+    if (w.fault && !was.fault) { setState(name + ': SENSOR FAULT. It is not counting. Take the wrench out of use.', 'bad'); if (navigator.vibrate) navigator.vibrate([600, 200, 600]); }
+    else if (w.orient && !was.orient) setState(name + ' twisted the wrong way on 3 clicks: it may be mounted backwards. Run Orient on the Teach tab.', 'bad');
+    else if (w.battCrit && !was.battCrit) setState(name + ' battery CRITICAL: charge it now.', 'bad');
+    else if (w.mount && !was.mount) setState(name + ': clicks are much weaker than when taught. Check the clamp, then re-teach.', 'bad');
+    else if (w.battLow && !was.battLow) setState(name + ' battery low: charge it at the end of the shift.', 'amber');
+    // heartbeat carries the low 16 bits of the newest click number: fetch anything this phone has not got
+    if (!p.syncing && !p.teach && !p.oldFw && e.seq !== ((store.seen[key] || 0) & 0xFFFF)) startSync(key);
+    renderPods();
+  }
+
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => wakeLock = null); } } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && pods.size) keepAwake(); });
+
+  // ---------- CSV ----------
+  // commas would split the cell; a leading = + - @ would make Excel run it as a formula
+  const csvCell = x => { let v = String(x ?? '').replace(/[,\r\n]/g, ';'); if (/^[=+\-@\t]/.test(v) && isNaN(+v)) v = "'" + v; return v; };
+  window.__csvCell = v => csvCell(v);
+  function csv() {
+    const head = ['time', 'engine', 'pod', 'click_no', 'event', 'peak_g', 'jump_dps', 'rotation_deg', 'pull_through', 'via', 'pod_boot', 'note'];
+    const rows = store.clicks.map(c => ({ t: c.t, v: [c.t ? new Date(c.t).toISOString() : '', c.engine, c.pod, c.seq, c.kind === 'fault' ? (c.code === 2 ? 'WATCHDOG_RESTART' : 'SENSOR_FAULT') : c.kind === 'notcounted' ? (c.code === 2 ? 'NOT_COUNTED_WRONG_WAY' : 'NOT_COUNTED_WEAK') : c.kind === 'drop' ? 'DROP' : 'CLICK', c.peak.toFixed(2), (c.kind && c.kind !== 'click') ? '' : c.jump,
+                   (c.kind && c.kind !== 'click') ? '' : c.rot.toFixed(1), (c.kind && c.kind !== 'click') ? '' : (c.pt ? 'yes' : 'no'), c.via, c.boot,
+                   (c.kind === 'drop' ? 'free fall ' + c.ff + ' ms; check calibration ' : '') + (c.t ? '' : 'no time: pod restarted before syncing') + (c.wrapped ? ' older unsynced clicks were overwritten' : '')] }))
+      .concat(store.notes.map(n => ({ t: n.t, v: [new Date(n.t).toISOString(), '', n.pod, '', n.type, '', '', '', '', 'phone', '', 'supervisor cleared the drop flag'] })))
+      .concat(store.marks.map(m => ({ t: m.t, v: [new Date(m.t).toISOString(), m.engine, '', '', m.type === 'ENGINE' ? 'NEW_ENGINE' : 'COUNT_RESTART', '', '', '', '', 'phone', '', ''] })));
+    rows.sort((a, b) => a.t - b.t);
+    const lines = [head.join(',')].concat(rows.map(r => r.v.map(csvCell).join(',')));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'clickconfirm-log-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  // =====================================================================
+  //  TEACH MODE
+  // =====================================================================
+  const Teach = (() => {
+    const CMD = { NONE:0, ENTER:1, EXIT:2, ORIENT:3, SAVE:4, DEFAULTS:5 };
+    const RES = ['OK', 'Wrong supervisor code', 'Orient failed: not enough rotation, try again', 'Busy', 'Values rejected by the pod', 'Pod is not in teach mode', 'Too many wrong codes: the pod refuses codes for 1 minute'];
+    const STEPS = ['Ready', 'Orient', 'Good clicks', 'Non-clicks', 'Pull-throughs', 'Results', 'Verify', 'Save'];
+    const NEED = { good: 20, non: 20, pt: 5, vgood: 10, vnon: 10 };
+    const MIN = { good: 10, non: 10 };
+    const FF_MIN_MS = 25;
+    const t = { pod: '', step: 0, pin: '', s: { good: [], non: [], pt: [] }, v: { good: [], non: [] }, vphase: 'good',
+                prop: null, all: [], waiter: null, busy: '', msg: '', saved: false };
+
+    const pod = () => pods.get(t.pod);
+    const fmtDate = u => u ? new Date(u * 1000).toLocaleString() : 'never (factory defaults)';
+    const ratio = s => s.tight / Math.max(s.other, 0.1);
+    const pass = (s, P) => s.ff < FF_MIN_MS && s.peak >= P.I && s.tight >= P.J && s.tight >= P.D * s.other;
+    const cur = () => { const c = pod() && pod().ctl; return c ? { I: c.I, J: c.J, D: c.D, PT: c.PT } : null; };
+
+    function bucket() {
+      if (t.step === 2) return 'good'; if (t.step === 3) return 'non'; if (t.step === 4) return 'pt';
+      if (t.step === 6) return 'v' + t.vphase; return null;
+    }
+
+    // ---------- pod control ----------
+    function parseCtl(dv) {
+      return { result: dv.getUint8(1), I: dv.getUint16(4, true) / 100, J: dv.getUint16(6, true), D: dv.getUint16(8, true) / 100,
+               PT: dv.getUint16(10, true) / 10, axis: 'XYZ'[dv.getUint8(12)] || '?', sign: dv.getInt8(13),
+               taught: dv.getUint32(14, true), mode: dv.getUint8(18), lastCmd: dv.getUint8(19) };
+    }
+    function onCtl(name, dv) {
+      if (!dv || dv.byteLength < 20) return;
+      const p = pods.get(name); if (!p) return;
+      const c = parseCtl(dv);
+      if (c.mode === 2) { if (name === t.pod) { t.busy = 'Pull slowly in the tightening direction now…'; render(); } return; } // orient running
+      if (c.lastCmd === 7) c.taught = p.ctl ? p.ctl.taught : 0;      // a LOG_SEND reply carries the log ID there, not the teach time
+      p.ctl = c; p.teach = c.mode === 1; renderPods();
+      if (name === t.pod && t.waiter && c.lastCmd === t.waiter.cmd) { const w = t.waiter; t.waiter = null; clearTimeout(w.to); w.res(c); }
+      if (name === t.pod || !t.pod) render();
+    }
+    function send(cmd, P) {
+      const p = pod();
+      if (!p || !p.ctlChr || !p.connected) return Promise.reject(new Error('Pod not connected'));
+      const b = new DataView(new ArrayBuffer(20));
+      b.setUint8(0, 1); b.setUint8(1, cmd); b.setUint16(2, parseInt(t.pin, 10) || 0, true);
+      if (P) {
+        b.setUint16(4, Math.round(P.I * 100), true); b.setUint16(6, Math.round(P.J), true);
+        b.setUint16(8, Math.round(P.D * 100), true); b.setUint16(10, Math.round(P.PT * 10), true);
+        b.setUint32(14, Math.floor(Date.now() / 1000), true);
+      }
+      const go = () => new Promise((res, rej) => {
+        const to = setTimeout(() => { t.waiter = null; rej(new Error('Pod did not answer')); }, cmd === CMD.ORIENT ? 10000 : 4000);
+        t.waiter = { cmd, res, to };
+        p.ctlChr.writeValueWithResponse(b.buffer).catch(e => { clearTimeout(to); t.waiter = null; rej(e); });
+      });
+      const next = p.q.then(go, go); p.q = next.catch(() => {}); return next;   // same queue as sync: one Bluetooth write at a time
+    }
+    async function run(cmd, P, okMsg) {
+      t.busy = 'Talking to the pod…'; t.msg = ''; render();
+      try {
+        const c = await send(cmd, P);
+        t.busy = '';
+        if (c.result !== 0) { t.msg = RES[c.result] || ('Error ' + c.result); render(); return false; }
+        t.msg = okMsg || ''; render(); return true;
+      } catch (e) { t.busy = ''; t.msg = e.message; render(); return false; }
+    }
+
+    // ---------- samples ----------
+    function onSample(name, e) {
+      if (name !== t.pod) return;
+      if (e.type === 5) {                                     // rotation after a shock
+        const s = t.all.find(x => x.seq === e.seq && x.rot == null);
+        if (s) { s.rot = e.extra / 10; renderFeed(); if (t.step === 4 || t.step === 2) render(); }
+        return;
+      }
+      const s = { seq: e.seq, peak: e.peak, tight: e.jump, other: e.extra, ff: e.rsv, rot: null,
+                  time: stamp(), bucket: bucket() || 'ignored' };
+      t.all.push(s);
+      const b = bucket();
+      if (b === 'good' || b === 'non' || b === 'pt') t.s[b].push(s);
+      else if (b === 'vgood' || b === 'vnon') {
+        t.v[t.vphase].push(s);
+        if (t.vphase === 'good' && t.v.good.length >= NEED.vgood) t.vphase = 'non';
+      }
+      if (navigator.vibrate) navigator.vibrate(40);
+      renderFeed(); render();
+    }
+    function undo(b) { const arr = b.startsWith('v') ? t.v[b.slice(1)] : t.s[b]; const s = arr.pop(); if (s) s.bucket = 'undone'; if (t.v.good.length < NEED.vgood) t.vphase = 'good'; renderFeed(); render(); }
+
+    // ---------- the threshold search ----------
+    function propose() {
+      const good = t.s.good.concat(t.s.pt).filter(s => s.ff < FF_MIN_MS);
+      const non = t.s.non.filter(s => s.ff < FF_MIN_MS);         // drops are rejected by the free-fall rule anyway
+      if (good.length < MIN.good) return { err: 'Need at least ' + MIN.good + ' good clicks.' };
+      if (t.s.non.length < MIN.non) return { err: 'Need at least ' + MIN.non + ' non-clicks.' };
+      const gP = Math.min(...good.map(s => s.peak)), gJ = Math.min(...good.map(s => s.tight)), gR = Math.min(...good.map(ratio));
+      if (gJ <= 0) return { err: 'Some good clicks show no jump in the tightening direction. Redo Orient (pull in the tightening direction), or remove a mistaken sample.' };
+      const fr = []; for (let f = 0.30; f <= 0.951; f += 0.05) fr.push(f);
+      let best = null;
+      for (const fi of fr) for (const fj of fr) for (const fd of fr) {
+        const P = { I: Math.max(1.0, gP * fi), J: Math.max(5, gJ * fj), D: Math.min(10, Math.max(1.0, gR * fd)) };
+        let gm = Infinity, bm = Infinity;
+        for (const s of good) gm = Math.min(gm, s.peak / P.I, s.tight / P.J, ratio(s) / P.D);
+        for (const s of non) {
+          const a = P.I / s.peak, b = s.tight > 0 ? P.J / s.tight : Infinity, r = ratio(s), c = r > 0 ? P.D / r : Infinity;
+          bm = Math.min(bm, Math.max(a, b, c));
+        }
+        if (gm < 1 || bm <= 1) continue;
+        const score = Math.min(gm, bm);
+        if (!best || score > best.score) best = { P, score, gm, bm };
+      }
+      // pull-through threshold: midway between rotation after good clicks and after pull-throughs
+      const rg = t.s.good.map(s => s.rot).filter(v => v != null), rp = t.s.pt.map(s => s.rot).filter(v => v != null);
+      const maxG = rg.length ? Math.max(...rg) : 0, minP = rp.length ? Math.min(...rp) : null;
+      let PT = (cur() && cur().PT) || 10, ptNote = rp.length ? '' : 'No pull-through samples: kept the pod\'s current value.';
+      if (minP != null) { if (minP > maxG) PT = (maxG + minP) / 2; else ptNote = 'Pull-throughs overlap normal clicks: kept the current value.'; }
+      if (PT <= maxG) { PT = maxG + 3; ptNote += ' Raised above the rotation seen after normal clicks.'; }
+      PT = Math.min(90, Math.max(2, PT));
+      if (!best) return { err: null, overlap: true, PT, ptNote, good, non };
+      const P = Object.assign({}, best.P, { PT });
+      const verdict = best.score >= 1.25 ? 'ok' : best.score >= 1.10 ? 'amber' : 'bad';
+      return { P, score: best.score, gm: best.gm, bm: best.bm, verdict, ptNote, good, non, overlap: false };
+    }
+
+    // ---------- chart ----------
+    function drawChart(cv, P) {
+      const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+      cv.width = W * dpr; cv.height = H * dpr; const g = cv.getContext('2d'); g.scale(dpr, dpr);
+      const pts = t.s.good.map(s => [s, 'good']).concat(t.s.pt.map(s => [s, 'pt']), t.s.non.map(s => [s, 'non']));
+      const xs = pts.map(([s]) => s.tight), ys = pts.map(([s]) => s.peak);
+      const x0 = Math.min(0, ...xs), x1 = Math.max(10, ...xs, P ? P.J * 1.2 : 0) * 1.08, y1 = Math.max(2, ...ys, P ? P.I * 1.2 : 0) * 1.08;
+      const L = 46, R = 10, T = 10, B = 34;
+      const X = v => L + (v - x0) / (x1 - x0) * (W - L - R), Y = v => H - B - v / y1 * (H - T - B);
+      const INK = '#171614', SIG = '#E2481C', MUTE = 'rgba(23,22,20,.55)';
+      g.fillStyle = MUTE; g.font = '11px "IBM Plex Mono", monospace'; g.strokeStyle = 'rgba(23,22,20,.12)'; g.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) { const yv = y1 * i / 4, y = Y(yv); g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke(); g.fillText(yv.toFixed(1), 6, y + 4); }
+      for (let i = 0; i <= 4; i++) { const xv = x0 + (x1 - x0) * i / 4, x = X(xv); g.fillText(Math.round(xv), x - 10, H - 16); }
+      g.fillText('tightening jump °/s →', W - R - 130, H - 3); g.fillText('↑ shock g', L + 4, T + 12);
+      if (P) {
+        g.fillStyle = 'rgba(23,22,20,0.06)'; g.fillRect(X(P.J), T, W - R - X(P.J), Y(P.I) - T);
+        g.strokeStyle = SIG; g.setLineDash([5, 4]); g.lineWidth = 1.5;
+        g.beginPath(); g.moveTo(X(P.J), T); g.lineTo(X(P.J), H - B); g.stroke();
+        g.beginPath(); g.moveTo(L, Y(P.I)); g.lineTo(W - R, Y(P.I)); g.stroke(); g.setLineDash([]);
+        g.fillStyle = SIG; g.font = '600 11px "IBM Plex Mono", monospace'; g.fillText('COUNTS HERE', W - R - 84, T + 14);
+      }
+      for (const [s, k] of pts) {
+        const x = X(s.tight), y = Y(s.peak); g.globalAlpha = s.ff >= FF_MIN_MS ? 0.3 : 1; g.lineWidth = 2;
+        if (k === 'good') { g.beginPath(); g.arc(x, y, 4.5, 0, 7); g.fillStyle = INK; g.fill(); }
+        else if (k === 'pt') { g.beginPath(); g.arc(x, y, 5, 0, 7); g.strokeStyle = INK; g.stroke(); }
+        else { g.strokeStyle = SIG; g.beginPath(); g.moveTo(x - 4.5, y - 4.5); g.lineTo(x + 4.5, y + 4.5); g.moveTo(x + 4.5, y - 4.5); g.lineTo(x - 4.5, y + 4.5); g.stroke(); }
+      }
+      g.globalAlpha = 1;
+    }
+
+    // ---------- UI ----------
+    function renderFeed() {
+      const el = $('teachFeed'); if (!el) return;
+      el.innerHTML = t.all.slice(-40).reverse().map(s => {
+        const cls = s.bucket === 'good' || s.bucket === 'pt' ? 'ok' : s.bucket === 'non' ? 'bad' : 'mute';
+        const lbl = { good: 'click', non: 'non-click', pt: 'pull-thru', vgood: 'check·click', vnon: 'check·non', ignored: 'ignored', undone: 'undone' }[s.bucket] || s.bucket;
+        return `<span class="chip ${cls}" title="#${s.seq}">${esc(lbl)} ${s.peak.toFixed(1)}g ${s.tight}°/s${s.rot != null ? ' ↻' + s.rot.toFixed(1) + '°' : ''}${s.ff >= FF_MIN_MS ? ' DROP' : ''}</span>`;
+      }).join('') || '<span class="note">No samples yet.</span>';
+    }
+    function podOptions() {
+      const sel = $('teachPod'); const names = [...pods.keys()];
+      if (!t.pod && names.length) t.pod = names[0];
+      sel.innerHTML = names.length ? names.map(n => `<option value="${esc(n)}" ${n === t.pod ? 'selected' : ''}>${esc(label(n))}</option>`).join('') : '<option>— connect a pod first —</option>';
+      sel.disabled = t.step > 0;
+    }
+    function stepsBar() {
+      const n = STEPS.length - 1;
+      $('teachSteps').innerHTML = `<div class="stepnum"><b>${String(t.step).padStart(2, '0')}</b><span>${STEPS[t.step]}</span>${t.step ? `<i>of ${String(n).padStart(2, '0')}</i>` : ''}</div>
+        <div class="segs">${STEPS.slice(1).map((_, i) => `<i class="${i + 1 === t.step ? 'on' : i + 1 < t.step ? 'done' : ''}"></i>`).join('')}</div>`;
+    }
+    const btn = (id, label, cls = '', dis = false) => `<button type="button" id="${id}" class="${cls}" ${dis || t.busy ? 'disabled' : ''}>${label}</button>`;
+    const msgHtml = () => (t.busy ? `<div class="verdict amber">${esc(t.busy)}</div>` : '') + (t.msg ? `<div class="verdict ${/saved|reset to factory|counting again/i.test(t.msg) ? 'ok' : 'bad'}">${esc(t.msg)}</div>` : '');
+    function tallyHtml(b, need, title, list) {
+      const n = (b.startsWith('v') ? t.v[b.slice(1)] : t.s[b]).length;
+      return `<div class="row" style="justify-content:space-between;align-items:flex-end"><div class="tally">${n}<small>/${need}</small></div>${btn('bUndo', 'Undo last', '', n === 0)}</div>${title ? `<h2 style="margin-top:18px">${title}</h2>` : ''}${list ? '<ul class="do">' + list + '</ul>' : ''}`;
+    }
+    function bodyHtml() {
+      const p = pod();
+      if (!p) return '<h2>Connect a pod</h2><p class="note">Use "Connect pod" at the top, then come back to this tab.</p>';
+      if (!p.ctlChr) return '<h2>This pod has no teach mode</h2><p class="note">Upload firmware v3.7 (ClickConfirm_Pod.ino) to the pod, then reconnect.</p>';
+      if (!p.connected) return '<h2>Pod disconnected</h2><p class="note">Reconnect it from the Count tab. The pod has left teach mode by itself; nothing was saved.</p>' + btn('bRestart', 'Start over');
+      const c = p.ctl || {};
+      switch (t.step) {
+        case 0: return `<h2>Teach ${esc(label(t.pod))}</h2>
+          <div class="kv">
+            <div>Taught</div><div>${esc(fmtDate(c.taught))}</div><div></div>
+            <div>Shock threshold</div><div>${c.I != null ? c.I.toFixed(2) + ' g' : '—'}</div><div></div>
+            <div>Tightening jump</div><div>${c.J != null ? c.J + ' °/s' : '—'}</div><div></div>
+            <div>Drive-axis dominance</div><div>${c.D != null ? c.D.toFixed(2) + '×' : '—'}</div><div></div>
+            <div>Pull-through</div><div>${c.PT != null ? c.PT.toFixed(1) + '°' : '—'}</div><div></div>
+            <div>Orientation</div><div>${c.axis ? c.axis + (c.sign > 0 ? '+' : '−') : '—'}</div><div></div>
+          </div>
+          <p class="note" style="margin:0 0 18px">Bring the wrench set to its production torque, a joint to click on, and ten minutes. The pod counts nothing until you save or leave.</p>
+          <div class="row"><label for="pin">Supervisor code <input id="pin" type="password" inputmode="numeric" maxlength="5" value="${esc(t.pin)}"></label>
+          ${btn('bEnter', 'Start teach', 'primary')} ${btn('bDefaults', 'Reset to defaults', 'warn')}</div>${msgHtml()}`;
+        case 1: return `
+          <p class="note" style="margin:0 0 18px">Wrench on a bolt. Tap <b>Orient</b>, wait until both lights stay on, then pull <b>slowly in the tightening direction</b> for three seconds. Stop before it clicks.</p>
+          <div class="row">${btn('bOrient', 'Orient', 'primary')} ${btn('bSkipOrient', 'Keep current (' + (c.axis || '?') + (c.sign > 0 ? '+' : '−') + ')')}</div>${msgHtml()}`;
+        case 2: return tallyHtml('good', NEED.good, '', '<li>Tighten to the click at the production setting, the way operators do.</li><li>Mix angles and grip positions; include some under-engine reaches.</li>') +
+          `<div class="row" style="margin-top:10px">${btn('bNext', 'Next: non-clicks', 'primary', t.s.good.length < MIN.good)}</div>`;
+        case 3: return tallyHtml('non', NEED.non, '', '<li>Ratchet back (5×)</li><li>Set the wrench down on the bench (5×)</li><li>Tap or bump it against the engine (5×)</li><li>Drop it on a mat (a few)</li><li>Anything else that happens on the line</li>') +
+          `<p class="note" style="margin:0 0 14px">Gentle handling records nothing. That's correct: only shocks above 1 g are captured.</p><div class="row">${btn('bBack', 'Back')} ${btn('bNext', 'Next: pull-throughs', 'primary', t.s.non.length < MIN.non)}</div>`;
+        case 4: return tallyHtml('pt', NEED.pt, 'Optional', '<li>Click, then deliberately keep turning past the click.</li><li>Wait one second between each.</li>') +
+          `<div class="row">${btn('bBack', 'Back')} ${btn('bNext', t.s.pt.length ? 'Next: results' : 'Skip: results', 'primary')}</div>`;
+        case 5: {
+          const r = t.prop = propose();
+          if (r.err) return `<div class="verdict bad">${esc(r.err)}</div><div class="row" style="margin-top:10px">${btn('bBack', 'Back')} ${btn('bRestart', 'Start over', 'warn')}</div>`;
+          const P = r.P, cu = cur() || {};
+          const v = r.overlap ? '<div class="verdict bad">Overlap: some non-clicks look like clicks. Do not save. Check the clamp is tight and the pod is seated, then teach again.</div>'
+            : r.verdict === 'ok' ? `<div class="verdict ok">Clear gap. Weakest good click clears the thresholds by ${Math.round((r.gm - 1) * 100)}%, closest non-click misses by ${Math.round((r.bm - 1) * 100)}%.</div>`
+            : r.verdict === 'amber' ? `<div class="verdict amber">Narrow gap (${Math.round((r.score - 1) * 100)}% margin). Usable for testing; check the mount and consider re-teaching.</div>`
+            : `<div class="verdict bad">Gap too small (${Math.round((r.score - 1) * 100)}%). Do not save; check the mount and teach again.</div>`;
+          const row = (n, a, b, u, d) => `<div>${n}</div><div>${b != null ? b.toFixed(d) + u : '—'}</div><div style="color:var(--muted)">was ${a != null ? a.toFixed(d) + u : '—'}</div>`;
+          return `${v}<canvas id="chart" style="margin-top:10px"></canvas>
+            <p class="note" style="margin-top:6px">● good click &nbsp; ○ pull-through &nbsp; <span style="color:var(--signal)">×</span> non-click (faint = dropped). A shock counts only in the shaded corner, and only if most of the twist is on the drive axis.</p>
+            ${P ? `<div class="kv">${row('Shock threshold', cu.I, P.I, ' g', 2)}${row('Tightening jump', cu.J, P.J, ' °/s', 0)}${row('Drive-axis dominance', cu.D, P.D, '×', 2)}${row('Pull-through', cu.PT, P.PT, '°', 1)}</div>` : ''}
+            ${r.ptNote ? `<p class="note">${esc(r.ptNote)}</p>` : ''}
+            <div class="row" style="margin-top:10px">${btn('bBack', 'Back')} ${btn('bRestart', 'Start over', 'warn')} ${btn('bNext', 'Next: verify', 'primary', r.overlap || r.verdict === 'bad')}</div>`;
+        }
+        case 6: {
+          const P = t.prop.P, ok = s => pass(s, P);
+          const chips = (arr, want) => arr.map(s => `<span class="chip ${ok(s) === want ? 'ok' : 'bad'}">${ok(s) ? 'CLICK' : 'no'} ${s.peak.toFixed(1)}g</span>`).join('');
+          const gOk = t.v.good.filter(ok).length, nBad = t.v.non.filter(ok).length;
+          const done = t.v.good.length >= NEED.vgood && t.v.non.length >= NEED.vnon;
+          const allRight = gOk === t.v.good.length && nBad === 0;
+          return `
+            <p class="note">${t.vphase === 'good' ? '<b>Now: ' + NEED.vgood + ' good clicks.</b>' : '<b>Now: ' + NEED.vnon + ' non-clicks</b> (ratchet back, set down, bump).'} The pod is still not counting; this page checks each one.</p>
+            <div class="tag">Clicks ${t.v.good.length}/${NEED.vgood}</div><div class="chips">${chips(t.v.good, true) || '<span class="note">—</span>'}</div>
+            <div class="tag" style="margin-top:8px">Non-clicks ${t.v.non.length}/${NEED.vnon}</div><div class="chips">${chips(t.v.non, false) || '<span class="note">—</span>'}</div>
+            ${done ? (allRight ? '<div class="verdict ok" style="margin-top:10px">All 20 sorted correctly.</div>' : `<div class="verdict bad" style="margin-top:10px">${t.v.good.length - gOk} click(s) missed, ${nBad} non-click(s) would count. Do not save: go back and add samples, or teach again.</div>`) : ''}
+            <div class="row" style="margin-top:10px">${btn('bUndo', 'Undo last', '', !(t.v.good.length + t.v.non.length))} ${btn('bVerifyReset', 'Restart verify')} ${btn('bBackRes', 'Back to results')} ${btn('bNext', 'Next: save', 'primary', !(done && allRight))}</div>`;
+        }
+        case 7: {
+          const P = t.prop.P;
+          return `<p class="note" style="margin:0 0 6px">Writes these four numbers to ${esc(label(t.pod))}. It uses them from the next click.</p>
+            <div class="kv"><div>Shock</div><div>${P.I.toFixed(2)} g</div><div></div><div>Jump</div><div>${Math.round(P.J)} °/s</div><div></div><div>Dominance</div><div>${P.D.toFixed(2)}×</div><div></div><div>Pull-through</div><div>${P.PT.toFixed(1)}°</div><div></div></div>
+            <div class="row" style="margin-top:10px">${t.saved ? btn('bFinish', 'Finish: back to counting', 'primary') : btn('bSave', 'Save to pod', 'primary') + ' ' + btn('bBack', 'Back')}</div>${msgHtml()}
+            <p class="note">After saving, download the teach log and keep it with the wrench's calibration record.</p>`;
+        }
+      }
+      return '';
+    }
+    async function exitTeach() { if (pod() && pod().teach) await run(CMD.EXIT); }
+    function restart() { t.step = 0; t.s = { good: [], non: [], pt: [] }; t.v = { good: [], non: [] }; t.vphase = 'good'; t.prop = null; t.saved = false; t.msg = ''; }
+    function wire() {
+      const on = (id, f) => { const e = $(id); if (e) e.onclick = f; };
+      const pin = $('pin'); if (pin) pin.oninput = () => { t.pin = pin.value.trim(); };
+      on('bEnter', async () => { t.pin = ($('pin').value || '').trim(); restart(); if (await run(CMD.ENTER)) { t.step = 1; t.msg = ''; render(); } });
+      on('bDefaults', async () => { t.pin = ($('pin').value || '').trim(); if (confirmReset()) await run(CMD.DEFAULTS, null, 'Thresholds reset to factory defaults.'); });
+      on('bOrient', async () => { if (await run(CMD.ORIENT, null, 'Orientation saved.')) { t.step = 2; t.msg = ''; render(); } });
+      on('bSkipOrient', () => { t.step = 2; t.msg = ''; render(); });
+      on('bNext', () => { t.step++; t.msg = ''; render(); });
+      on('bBack', () => { t.step--; t.msg = ''; render(); });
+      on('bBackRes', () => { t.step = 5; render(); });
+      on('bUndo', () => undo(t.step === 6 ? (t.v.non.length ? 'vnon' : 'vgood') : bucket()));
+      on('bVerifyReset', () => { t.v = { good: [], non: [] }; t.vphase = 'good'; render(); });
+      on('bRestart', async () => { await exitTeach(); restart(); render(); });
+      on('bSave', async () => { if (await run(CMD.SAVE, t.prop.P, 'Saved on the pod.')) { t.saved = true; render(); } });
+      on('bFinish', async () => { await exitTeach(); csvTeach(); restart(); t.msg = 'Teach saved. The pod is counting again.'; render(); });
+      const cv = $('chart'); if (cv && t.prop) drawChart(cv, t.prop.P);
+    }
+    let armed = 0;
+    function confirmReset() {     // two-tap confirm instead of a browser dialog
+      if (Date.now() - armed < 4000) { armed = 0; return true; }
+      armed = Date.now(); t.msg = 'Tap "Reset to defaults" again within 4 s to confirm'; render(); return false;
+    }
+    function render() {
+      if (!$('teachBody')) return;
+      podOptions(); stepsBar();
+      $('teachBody').innerHTML = bodyHtml(); wire();
+    }
+    function onDisconnect(name) { if (name === t.pod) { t.waiter = null; t.busy = ''; render(); } }
+    function csvTeach() {
+      const P = t.prop && t.prop.P;
+      const head = ['time', 'pod', 'seq', 'bucket', 'peak_g', 'jump_dps', 'other_dps', 'freefall_ms', 'rotation_deg', 'counts_with_new_thresholds'];
+      const lines = [head.join(',')].concat(t.all.map(s => [s.time, label(t.pod), s.seq, s.bucket, s.peak.toFixed(2), s.tight, s.other, s.ff, s.rot == null ? '' : s.rot.toFixed(1), P ? (pass(s, P) ? 'yes' : 'no') : ''].join(',')));
+      if (P) lines.push('', `thresholds,${label(t.pod)},shock_g=${P.I.toFixed(2)},jump_dps=${Math.round(P.J)},dominance=${P.D.toFixed(2)},pullthru_deg=${P.PT.toFixed(1)},saved=${t.saved ? 'yes' : 'no'},${new Date().toISOString()}`);
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv' }), a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'clickconfirm-teach-' + (t.pod ? label(t.pod) : 'pod') + '-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.csv';
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }
+    $('teachPod').onchange = e => { t.pod = e.target.value; restart(); render(); };
+    $('btnTeachCsv').onclick = csvTeach;
+    window.addEventListener('resize', () => { const cv = $('chart'); if (cv && t.prop) drawChart(cv, t.prop.P); });
+    return { onCtl, onSample, render, onDisconnect, renderFeed, _t: t, _propose: propose, _pass: pass };
+  })();
+
+  function showTab(which) {
+    const teach = which === 'teach';
+    $('tabCount').style.display = teach ? 'none' : 'flex'; $('tabTeach').hidden = !teach; $('tabTeach').style.display = teach ? 'flex' : 'none';
+    $('countNote').hidden = teach;
+    $('tabBtnCount').setAttribute('aria-selected', String(!teach)); $('tabBtnTeach').setAttribute('aria-selected', String(teach));
+    if (teach) { Teach.render(); Teach.renderFeed(); }
+  }
+  $('tabBtnCount').onclick = () => showTab('count');
+  $('tabBtnTeach').onclick = () => showTab('teach');
+  window.__cc = { pods, Teach, get store() { return store; }, ready };   // for testing
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});   // installable + works offline
+
+  // ---------- engine serial ----------
+  // A new serial starts a new engine: its count starts at zero. Clicks are matched to engines by time,
+  // so clicks that sync later still land on the engine that was set when they happened.
+  function setEngine(raw) {
+    const v = String(raw || '').trim().toUpperCase().slice(0, 40);
+    if (!v || v === store.engine) { $('engine').value = store.engine; return; }
+    store.engine = v; $('engine').value = v;
+    store.marks.push({ t: Date.now(), type: 'ENGINE', engine: v }); save();
+    renderAll();
+    const sofar = countFor(v);
+    setState('Engine ' + v + (sofar ? ' · ' + sofar + ' bolt' + (sofar === 1 ? '' : 's') + ' already counted on it' : ' · count starts at zero'), 'amber');
+    if (navigator.vibrate) navigator.vibrate(60);
+  }
+  $('engine').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); setEngine(e.target.value); e.target.blur(); } });
+  $('engine').addEventListener('change', e => setEngine(e.target.value));
+
+  let scanStream = null, scanTimer = null;
+  async function startScan() {
+    if (!('BarcodeDetector' in window) || !navigator.mediaDevices) {
+      setState('This browser cannot read barcodes. Type the serial, or use a handheld scanner.', 'amber'); $('engine').focus(); return;
+    }
+    let det;
+    try {
+      const want = ['code_128', 'code_39', 'qr_code', 'data_matrix', 'ean_13', 'itf', 'pdf417'];
+      const have = await BarcodeDetector.getSupportedFormats();
+      det = new BarcodeDetector({ formats: want.filter(f => have.includes(f)) });
+    } catch (e) { setState('Barcode reader unavailable: ' + e.message, 'bad'); return; }
+    try { scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false }); }
+    catch (e) { setState('Camera blocked. Allow camera access for this page, or type the serial.', 'bad'); return; }
+    const v = $('scanVideo'); v.srcObject = scanStream; await v.play();
+    $('scanBox').hidden = false; $('scanMsg').textContent = 'Point at the engine serial barcode';
+    const tick = async () => {
+      if (!scanStream) return;
+      try {
+        const codes = await det.detect(v);
+        if (codes.length) { stopScan(); setEngine(codes[0].rawValue); return; }
+      } catch (e) {}
+      scanTimer = setTimeout(tick, 150);
+    };
+    tick();
+  }
+  function stopScan() {
+    clearTimeout(scanTimer);
+    if (scanStream) scanStream.getTracks().forEach(t => t.stop());
+    scanStream = null; $('scanBox').hidden = true;
+  }
+  $('btnScan').onclick = startScan;
+  $('btnScanClose').onclick = stopScan;
+
+  // ---------- wiring ----------
+  $('btnConnect').onclick = connect;
+  $('btnCsv').onclick = csv;
+  $('btnReset').onclick = () => {
+    store.marks.push({ t: Date.now(), type: 'RESTART', engine: store.engine }); save(); renderAll();
+    setState('Count restarted at zero' + (store.engine ? ' for ' + store.engine : ''), 'amber');
+  };
+  let clearArmed = 0;
+  $('btnClear').onclick = () => {
+    if (Date.now() - clearArmed > 4000) { clearArmed = Date.now(); setState('Tap Clear again within 4 s to delete the log on this phone. Export the CSV first.', 'bad'); return; }
+    clearArmed = 0; store.clicks = []; store.marks = []; have.clear(); dirtyClicks = [];
+    try { db && db.transaction('clicks', 'readwrite').objectStore('clicks').clear(); } catch (e) {}
+    if (store.engine) store.marks.push({ t: Date.now(), type: 'ENGINE', engine: store.engine });
+    save(); renderAll(); setState('Phone log cleared. Clicks already pulled from pods are not downloaded again.', 'amber');
+  };
+  setInterval(renderPods, 5000);
+})();
+</script>
+
+</body>
+</html>
