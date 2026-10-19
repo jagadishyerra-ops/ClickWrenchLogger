@@ -1455,7 +1455,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   });
 
   // ------------------------------------------------------------------ send the trained model to the pod (firmware v3.9+)
-  // Same layout the pod's modelParse() reads: "CCM1", ver, nf, nh, nk, clickMask, 0,0,0, capture settings (5 floats),
+  // Same layout the pod's modelParse() reads: "CCM1", ver=2, nf, nh, nk, clickMask, 0,0,0, capture settings (5 floats), trained (u32), clicks (u16), not-clicks (u16),
   // mean, std, W1, b1, W2, b2 (float32 little endian), crc32 of everything before it.
   function crc32(bytes) { let c = 0xFFFFFFFF; for (let i = 0; i < bytes.length; i++) { c ^= bytes[i]; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1)); } return (c ^ 0xFFFFFFFF) >>> 0; }
   function modelPayload(m) {
@@ -1464,11 +1464,14 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     const mask = m.classes.reduce((a, k, i) => outcome(k) === 'click' ? a | (1 << i) : a, 0);
     if (!mask) throw new Error('the model has no click class');
     const cap = m.capture || { trigG: +$('trigG').value, trigD: +$('trigD').value, preMs: +$('preMs').value, quietMs: +$('postMs').value, maxMs: +$('maxMs').value };
-    const size = 32 + 4 * (nf + nf + nh * nf + nh + K * nh + K) + 4, buf = new ArrayBuffer(size), dv = new DataView(buf), u8 = new Uint8Array(buf);
+    const size = 40 + 4 * (nf + nf + nh * nf + nh + K * nh + K) + 4, buf = new ArrayBuffer(size), dv = new DataView(buf), u8 = new Uint8Array(buf);
     let o = 0; 'CCM1'.split('').forEach(ch => dv.setUint8(o++, ch.charCodeAt(0)));
-    [1, nf, nh, K, mask, 0, 0, 0].forEach(v => dv.setUint8(o++, v));
+    [2, nf, nh, K, mask, 0, 0, 0].forEach(v => dv.setUint8(o++, v));            // format 2: + trained date and clip counts
     const f = v => { dv.setFloat32(o, v, true); o += 4; };
     [cap.trigG, cap.trigD, cap.preMs, cap.quietMs, cap.maxMs].forEach(f);
+    const cnt = m.counts || {}, nClick = m.classes.reduce((a, k) => a + (outcome(k) === 'click' ? (cnt[k] || 0) : 0), 0), nAll = Object.values(cnt).reduce((a, b) => a + b, 0);
+    dv.setUint32(o, Math.round((Date.parse(m.created) || Date.now()) / 1000), true); o += 4;
+    dv.setUint16(o, Math.min(65535, nClick), true); o += 2; dv.setUint16(o, Math.min(65535, nAll - nClick), true); o += 2;
     net.mean.forEach(f); net.std.forEach(v => f(v || 1)); net.W1.forEach(r => r.forEach(f)); net.b1.forEach(f); net.W2.forEach(r => r.forEach(f)); net.b2.forEach(f);
     const crc = crc32(u8.subarray(0, size - 4)); dv.setUint32(size - 4, crc, true);
     return { hex: Array.from(u8, b => b.toString(16).padStart(2, '0')).join(''), crc, size };

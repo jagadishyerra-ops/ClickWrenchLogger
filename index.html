@@ -97,6 +97,10 @@ h3.sec .tag{font-weight:500;font-stretch:100%}
 .pod button{grid-column:2;grid-row:1/span 3}
 .dot{display:inline-block;width:10px;height:10px;margin-right:10px;background:var(--ink-3);border-radius:0}
 .dot.on{background:var(--go)} .dot.off{background:var(--signal)}
+.info-btn{border:2px solid var(--ink-3);color:var(--ink-2);border-radius:50%;width:26px;height:26px;min-height:0;padding:0;margin-left:10px;font:700 14px/22px Georgia,serif;text-transform:none;letter-spacing:0}
+.info-btn[aria-expanded=true]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.pod .info{grid-column:1/-1;margin:6px 0 2px;padding:8px 10px;background:var(--paper-2,rgba(23,22,20,.05));font:13px/1.55 var(--mono);color:var(--ink-2)}
+.pod .info b{color:var(--ink)}
 .badge{font:600 11px var(--mono);letter-spacing:.08em;margin-left:10px;padding:3px 6px;border:1.5px solid var(--ink);text-transform:uppercase}
 .empty{font:14px var(--mono);color:var(--ink-3);padding:14px 0}
 
@@ -239,6 +243,7 @@ input[type=password],input[type=text]{font:600 24px var(--mono);padding:8px 12px
   const EVT = 'ccc11001-210f-6ca1-904e-7d2b551e8a3c';
   const CTL = 'ccc11003-210f-6ca1-904e-7d2b551e8a3c';
   const LOG = 'ccc11004-210f-6ca1-904e-7d2b551e8a3c';
+  const INF = 'ccc11005-210f-6ca1-904e-7d2b551e8a3c';     // firmware 3.9.2+: version + what decides clicks
   const CMD = { SET_TIME: 6, LOG_SEND: 7, LOG_SYNCED: 8, CLEAR_DROP: 9 };
   const REC_END = 0xFE;
 
@@ -354,6 +359,25 @@ input[type=password],input[type=text]{font:600 24px var(--mono);padding:8px 12px
     return `<div class="batt ${k}" title="${(p.batt / 1000).toFixed(2)} V"><span class="bar"><i style="width:calc(${Math.max(3, pct)}% - 2px)"></i></span>${pct}%<span style="font-weight:500;font-size:12px">${txt || (p.batt / 1000).toFixed(2) + ' V'}</span></div>`;
   }
 
+  // PodInfo (18 bytes): ver, fw[3], decider (0 rules default, 1 rules taught, 2 model), lab, modelId, trained, clicks, not-clicks
+  function parseInfo(dv) {
+    if (!dv || dv.byteLength < 18 || dv.getUint8(0) !== 1) return null;
+    return { fw: [1, 2, 3].map(i => dv.getUint8(i)).join('.'), decider: dv.getUint8(4), lab: dv.getUint8(5), modelId: dv.getUint32(6, true),
+             trained: dv.getUint32(10, true), clicks: dv.getUint16(14, true), nots: dv.getUint16(16, true) };
+  }
+  const dayOf = t => t ? new Date(t * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  // the (i) panel: short, three lines at most
+  function infoHtml(p) {
+    const i = p.info;
+    if (!i) return '<div class="info">Pod firmware is older than 3.9.2, so it cannot report these details.</div>';
+    const taught = p.ctl && p.ctl.taught ? dayOf(p.ctl.taught) : '';
+    const how = i.decider === 2 ? `<b>Lab-trained model</b> · ID ${i.modelId.toString(16).toUpperCase().padStart(8, '0')}`
+              : i.decider === 1 ? `<b>Fixed rules</b>, taught${taught ? ' ' + taught : ''}` : '<b>Fixed rules</b>, factory settings';
+    const more = i.decider === 2 ? `Trained ${dayOf(i.trained) || '(date unknown)'} on ${i.clicks} clicks / ${i.nots} other movements · decides ~0.5 s after each click`
+              : 'Decides the moment the click happens';
+    return `<div class="info">Counts with: ${how}<br>${more}<br>Pod firmware ${esc(i.fw)}${i.lab ? ' · <b style="color:var(--signal)">Lab session: not counting</b>' : ''}</div>`;
+  }
+
   function renderPods() {
     if (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.dropcode !== undefined) return;   // don't wipe a code being typed
     const el = $('pods'); el.innerHTML = pods.size ? '' : '<div class="empty">None linked yet. Power the pod, then Connect pod.</div>';
@@ -373,7 +397,8 @@ input[type=password],input[type=text]{font:600 24px var(--mono);padding:8px 12px
                       style="font:600 18px var(--mono);width:110px;padding:8px;border:2px solid var(--ink);border-radius:2px;background:transparent;color:var(--ink);letter-spacing:.2em">
                     <button type="button" class="warn" data-clear="${esc(key)}">Clear drop flag</button></div>` : '');
       const d = document.createElement('div'); d.className = 'pod';
-      d.innerHTML = `<div class="name"><span class="dot ${p.connected ? 'on' : 'off'}"></span>${esc(name)}${p.teach ? '<span class="badge">TEACH · not counting</span>' : ''}</div>
+      d.innerHTML = `<div class="name"><span class="dot ${p.connected ? 'on' : 'off'}"></span>${esc(name)}${p.teach ? '<span class="badge">TEACH · not counting</span>' : ''}<button type="button" class="info-btn" data-info="${esc(key)}" aria-expanded="${!!p.showInfo}" aria-label="pod details" title="what this pod counts with">i</button></div>
+        ${p.showInfo ? infoHtml(p) : ''}
         <div class="meta">${p.connected ? 'Connected' : 'Out of range: pod keeps saving'} · last heard ${ago}</div>
         ${battHtml(p)}
         <div class="meta">On this phone up to click #${n(store.seen[key] || 0)}${p.syncing ? ' · syncing…' : p.lastSync ? ' · synced ' + stamp(p.lastSync) : ''}</div>${warn}`;
@@ -383,6 +408,7 @@ input[type=password],input[type=text]{font:600 24px var(--mono);padding:8px 12px
       d.appendChild(b);
       el.appendChild(d);
     }
+    el.querySelectorAll('[data-info]').forEach(btn => btn.onclick = () => { const p = pods.get(btn.dataset.info); if (p) { p.showInfo = !p.showInfo; renderPods(); } });
     el.querySelectorAll('[data-clear]').forEach(btn => btn.onclick = () => clearDrop(btn.dataset.clear, el.querySelector(`[data-dropcode="${CSS.escape(btn.dataset.clear)}"]`).value));
   }
   async function clearDrop(key, code) {
@@ -454,6 +480,9 @@ input[type=password],input[type=text]{font:600 24px var(--mono);padding:8px 12px
       hook(logChr, ev => onRecord(key, ev.target.value));
       await logChr.startNotifications();
     }
+    p.info = null;
+    try { const inf = await svc.getCharacteristic(INF); hook(inf, ev => { p.info = parseInfo(ev.target.value); renderPods(); }); p.info = parseInfo(await inf.readValue()); await inf.startNotifications(); }
+    catch (e) { p.info = null; }
     Teach.onCtl(key, await p.ctlChr.readValue());
     p.connected = true; p.lastHeard = Date.now();
     renderPods(); Teach.render();
