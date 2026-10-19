@@ -224,13 +224,13 @@ input[type=range]{width:100%;accent-color:var(--ink)}
       </div>
       <div class="row" style="margin-top:8px">
         <label>Before <input type="number" id="preMs" value="500" step="50" min="200" max="1000"> ms</label>
-        <label>After (quiet) <input type="number" id="postMs" value="800" step="50" min="200" max="1500"> ms</label>
+        <label>Return click within <input type="number" id="pairMs" value="2500" step="100" min="500" max="4000"> ms</label>
+        <label>Keep after the return <input type="number" id="postMs" value="300" step="50" min="100" max="1500"> ms</label>
       </div>
       <div class="row" style="margin-top:8px">
-        <label><input type="checkbox" id="joinRet" checked style="width:18px;height:18px"> Keep recording through the return click</label>
-        <label>Longest clip <input type="number" id="maxMs" value="2500" step="100" min="1000" max="4000"> ms</label>
+        <label>Longest clip <input type="number" id="maxMs" value="3500" step="100" min="1000" max="5000"> ms</label>
       </div>
-      <p class="note" style="margin:6px 0 0">A clip stays open until the wrench has been quiet for the "After" time, so the click and the return click land in <b>one</b> clip. Raise "After" if return clicks still come out as separate clips.</p>
+      <p class="note" style="margin:6px 0 0">After a shock the clip waits for the <b>return click</b> (when you let go of the wrench) and keeps it in the <b>same</b> clip, so it can never start a clip of its own. No return within the time above: the clip ends there. Raise it if you hold the wrench longer after the click.</p>
       </details>
       <div class="demo" id="demoBox" hidden>
         <div class="tag" style="margin-bottom:6px">Demo: make the simulated wrench do… (the mode decides the label, like for real)</div>
@@ -336,7 +336,8 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   let sndBg = 0, micSame = 0, micPrevL = -1, micPrevS = -1, micWarned = false;                            // running background of sound sharpness, for the sound trigger
   const markers = [];                       // {at: absolute sample index, kind, peak, tight, other, ff, pt}
   let meta = { hz: 1000, accLsb: 0.000488, gyrLsb: 0.07, axis: 2, sign: -1, tool: 0, impact: 3, jump: 40, dom: 1.5, mic: 0, batt: 0 };
-  let base = [0, 0, 1], lockUntil = 0, pendingTrig = -1, source = '';
+  let base = [0, 0, 1], lockUntil = 0, pendingTrig = -1, source = '', liveV0 = 0, liveP0 = -1, liveRet = -1;   // click shock + its return click
+  const pairMs = () => +$('pairMs').value || 2500;
   const at = (abs, ch) => ring[((abs % RING) * 6) + ch];
 
   function pushSample(r6, m) {
@@ -361,13 +362,28 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     // so the return click when the click head springs back keeps the same clip open.
     const tg = +$('trigG').value, td = +$('trigD').value;
     const recording = mode !== 'off' || demoFast;              // Off: nothing is recorded
-    if (pendingTrig < 0) { if (recording && total >= lockUntil && (hp >= tg || gm >= td || sndHit)) { pendingTrig = total; lastAct = total; } }
+    if (pendingTrig < 0) { if (recording && total >= lockUntil && (hp >= tg || gm >= td || sndHit)) { pendingTrig = total; lastAct = total; liveV0 = hp; liveP0 = total; liveRet = -1; } }
     else if (hp >= tg * 0.5 || gm >= td * 0.5 || sndHit) lastAct = total;
     total++;
     if (pendingTrig >= 0) {
+      // v3.10: wait for the return click (next shock >= 30% of the click, >= 150 ms later) and end the clip just after it
+      const k = total - 1;
+      if (k - pendingTrig <= ms2s(60)) { if (hp > liveV0) { liveV0 = hp; liveP0 = k; } }
+      else if (liveRet < 0 && k >= liveP0 + ms2s(RET.deadMs) && hp >= retThr(liveV0)) liveRet = k;
       const post = ms2s(+$('postMs').value), maxPost = Math.max(post, ms2s(+$('maxMs').value - +$('preMs').value));
-      const end = $('joinRet').checked ? lastAct + post : pendingTrig + post;
-      if (total >= end || total - pendingTrig >= maxPost) { cutClip(pendingTrig, source, total - pendingTrig); lockUntil = total; pendingTrig = -1; }
+      const end = liveRet >= 0 ? liveRet + post : liveP0 + ms2s(pairMs());
+      if (total >= end || total - pendingTrig >= maxPost) {
+        const c = cutClip(pendingTrig, source, total - pendingTrig), r = liveRet; lockUntil = total; pendingTrig = -1;
+        // a shock is a return click only after a CLICK: after anything else it is an event of its own
+        // (a bump then a click 1 s later must give two clips, not one)
+        // (only in Not clicks mode: Sound mode decides labels from sound, which would hear the click before it)
+        if (c && r >= 0 && mode === 'not' && outcome(c.label || '') !== 'click' && total - r < RING) {
+          const hpAt = j => hpRing[j % RING], w = ms2s(30);
+          pendingTrig = r; liveP0 = r; liveV0 = 0; liveRet = -1; lastAct = total;
+          for (let j = r - w; j <= r + w && j < total; j++) if (hpAt(j) > liveV0) { liveV0 = hpAt(j); liveP0 = j; }
+          for (let j = liveP0 + ms2s(RET.deadMs); j < total; j++) if (hpAt(j) >= retThr(liveV0)) { liveRet = j; break; }
+        }
+      }
     }
   }
   let lastAct = -1, pausedDropped = 0;
@@ -524,7 +540,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   const gauss = () => { let u = 0; for (let i = 0; i < 6; i++) u += rnd(); return u - 3; };
   const R = (a, b) => a + (b - a) * rnd();
   function demoEvent(kind) {
-    const N = 1300, g = [], a = [];       // 1.3 s, event at 500
+    const N = 1300 + (window.__demoRetMs || 0), g = [], a = [];       // 1.3 s, event at 500 (longer when a test holds the wrench longer)
     let grav = [0, 0, 1], grav2 = [R(-.3, .3), R(-.3, .3), 1];
     for (let i = 0; i < N; i++) { g.push([gauss() * 1.5, gauss() * 1.5, gauss() * 1.5]); a.push([gauss() * .01, gauss() * .01, gauss() * .01]); }
     const E = 500, D = 2, s = -1;
@@ -545,11 +561,11 @@ input[type=range]{width:100%;accent-color:var(--ink)}
         setGrav(0, 0, grav, grav);
         const rd = R(25, 90); rot(E - R(250, 450), E, D, s * rd);
         rot(E, E + 12, D, s * R(140, 320)); rot(E + 12, E + 40, D, -s * R(20, 60));
-        ring(E, R(3.5, 8), R(180, 320), R(.008, .02), mix());
+        const amp = R(3.5, 8); ring(E, amp, R(180, 320), R(.008, .02), mix());
         if (kind === 'pull-through') rot(E + 60, E + R(350, 550), D, s * R(60, 140));
         for (let k = 0; k < 2; k++) rot(E - 5, E + 15, k, R(-25, 25));
-        { const rt = E + R(kind === 'pull-through' ? 600 : 300, 700);                    // return click: the head springs back when the pull is released
-          ring(rt, R(1.2, 2.6), R(220, 380), R(.004, .01), mix()); rot(rt - 40, rt + 25, D, -s * R(30, 90)); snd(rt, R(46, 54), R(52, 62), R(3, 7)); }
+        { const rt = E + (window.__demoRetMs || R(kind === 'pull-through' ? 600 : 300, 700));                    // return click: the head springs back when the pull is released
+          /* real returns: ~0.5-1x the click */ ring(rt, amp * R(.45, 1), R(220, 380), R(.004, .01), mix()); rot(rt - 40, rt + 25, D, -s * R(30, 90)); snd(rt, R(46, 54), R(52, 62), R(3, 7)); }
         break; }
       case 'bump': {
         setGrav(0, 0, grav, grav); snd(E, R(52, 64), R(38, 52), R(18, 35));          // dull thud
@@ -636,7 +652,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     // centre on the largest twist in the last 1.5 s
     let best = total - n, bv = -1;
     for (let k = total - n; k < total; k++) { if (k < 0) continue; const v = Math.hypot(at(k, 0), at(k, 1), at(k, 2)); if (v > bv) { bv = v; best = k; } }
-    const t0 = Math.max(best, pre), c = cutClip(t0, source + '-manual', Math.min(ms2s(+$('postMs').value), total - t0));
+    const t0 = Math.max(best, pre), c = cutClip(t0, source + '-manual', Math.min(ms2s(pairMs() + +$('postMs').value), total - t0));
     if (!c) setState('Not enough recent data for a clip yet.', 'bad');
   };
 
@@ -667,15 +683,38 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     r.sort((a, b) => a.i - b.i); r = r.slice(0, 5);
     shocksCache.set(c, r); return r;
   }
+  // the return click: the next shock after the click (see retThr, 150 ms .. "Return click within" later).
+  // Found the same way for every clip, whatever its label. ms = how long the wrench was held after the click,
+  // deg = how far it turned (tightening) between the click and the return.
+  const RET = { deadMs: 150, minG: 0.2, frac: 0.3 };
+  // the next shock counts as the return if it is >= 30% of the click, or big enough to start a clip by itself
+  // (so nothing that would have been its own clip can hide inside a clip that is waiting for its return)
+  const retThr = v0 => Math.min(+$('trigG').value || 1, Math.max(RET.minG, RET.frac * v0));
+  let retCache = new WeakMap();
+  function returnOf(c) {
+    if (retCache.has(c)) return retCache.get(c);
+    const hp = clipGetter(c).hp, n = hp.length, hz = c.hz, ms = v => Math.round(v * hz / 1000), p0 = shockPeak(c), v0 = hp[p0];
+    const thr = retThr(v0), a = p0 + ms(RET.deadMs), b = Math.min(n, p0 + ms(pairMs()));
+    let r = null;
+    for (let j = a; j < b; j++) if (hp[j] >= thr) {
+      let p = j; for (let k = j; k < Math.min(b, j + ms(60)); k++) if (hp[k] > hp[p]) p = k;
+      let deg = 0; for (let q = p0 + ms(30); q < p; q++) deg += c.sign * c.raw[q * 6 + c.axis] * c.gyrLsb / hz;
+      r = { i: p, ms: Math.round((p - p0) * 1000 / hz), ratio: hp[p] / (v0 || 1), deg }; break;
+    }
+    retCache.set(c, r); return r;
+  }
+  $('pairMs').addEventListener('change', () => { retCache = new WeakMap(); scheduleRender(); });
   function shockMarks(c) {                                 // [{i, text}] for the charts
-    const clk = outcome(c.label || '') === 'click', p0 = shockPeak(c);   // only YOUR label names them click / return
+    const clk = outcome(c.label || '') === 'click', p0 = shockPeak(c), ret = returnOf(c), gap = c.hz * 0.05;   // only YOUR label names them click
+    const list = shocksOf(c).slice();
+    if (ret && !list.some(x => Math.abs(x.i - ret.i) < gap)) { list.push({ i: ret.i, v: 0 }); list.sort((a, b) => a.i - b.i); }
     let k = 0;
-    return shocksOf(c).map(x => {
-      const first = Math.abs(x.i - p0) < c.hz * 0.05;
+    return list.map(x => {
+      const first = Math.abs(x.i - p0) < gap;
       if (x.i < p0 && !first) return { i: x.i, text: 'knock' };
-      const t = first ? (clk ? 'click' : 'shock 1') : (clk ? (k === 0 ? 'return' : 'shock ' + (k + 2)) : 'shock ' + (k + 2));
-      if (!first) k++;
-      return { i: x.i, text: t };
+      if (first) return { i: x.i, text: clk ? 'click' : 'shock 1' };
+      if (ret && Math.abs(x.i - ret.i) < gap) return { i: x.i, text: clk ? 'return' : 'return?' };
+      k++; return { i: x.i, text: 'shock ' + (k + 1) };
     });
   }
 
@@ -928,7 +967,11 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   const outcome = cls => COUNTS_AS[cls] || 'ignored';
 
   async function trainAndTest() {
-    const lab = clips.filter(c => c.label && classes.includes(c.label));
+    let lab = clips.filter(c => c.label && classes.includes(c.label)), rateNote = '';
+    // v3.10: clips from before the sensor fix hold ~104 real samples/s; never mix them with 416/s clips
+    const fresh = lab.filter(c => !oldRate(c));
+    if (fresh.length >= 20) { if (fresh.length < lab.length) rateNote = `${lab.length - fresh.length} clips recorded before firmware 3.10 (old sensor rate) were left out.`; lab = fresh; }
+    else if (lab.some(oldRate)) rateNote = 'These clips were recorded before firmware 3.10 (old sensor rate): re-record with firmware 3.10 so the model matches what the pod now sees.';
     const used = classes.filter(k => lab.some(c => c.label === k));
     if (lab.length < 20 || used.length < 2) { $('trainOut').innerHTML = '<p class="note" style="color:var(--signal)">Need at least 20 labelled clips in at least two classes.</p>'; return; }
     $('btnTrain').disabled = true; $('trainOut').innerHTML = '<p class="note">Training… (five test rounds, then the final model)</p>';
@@ -940,7 +983,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     catch (err) { $('btnTrain').disabled = false; $('trainOut').innerHTML = '<p class="note" style="color:var(--signal)">Training failed: ' + esc(err.message) + '</p>'; return; }
     model = { version: 1, created: new Date().toISOString(), classes: used, features: FEAT, net, counts: Object.fromEntries(used.map(k => [k, lab.filter(c => c.label === k).length])),
               counts_as: Object.fromEntries(used.map(k => [k, outcome(k)])),
-              capture: { trigG: +$('trigG').value, trigD: +$('trigD').value, preMs: +$('preMs').value, quietMs: +$('postMs').value, maxMs: +$('maxMs').value } };
+              capture: { trigG: +$('trigG').value, trigD: +$('trigD').value, preMs: +$('preMs').value, quietMs: Math.max(800, +$('postMs').value), maxMs: Math.min(4000, +$('maxMs').value), pairMs: pairMs() } };
     clips.forEach(c => c.pred = predict(c));
     // scores
     const conf = used.map(() => used.map(() => 0)); Y.forEach((y, i) => conf[y][pred[i]]++);
@@ -952,7 +995,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     const podFalse = lab.filter(c => outcome(c.label) !== 'click' && podSaid(c) === 'click').length;
     const drops = lab.filter(isDrop).length, dropsOk = lab.filter(c => isDrop(c) && c.label !== 'click').length;
     const pct = (a, b) => b ? (100 * a / b).toFixed(1) + '%' : '—';
-    $('trainOut').innerHTML = `
+    $('trainOut').innerHTML = (rateNote ? `<p class="note" style="color:var(--signal)">${esc(rateNote)}</p>` : '') + `
       <div class="metrics">
         <div><div class="big" style="color:${falseC ? 'var(--signal)' : 'var(--go)'}">${falseC}</div><span class="tag">false clicks · of ${nNon} non-clicks (${pct(falseC, nNon)})</span></div>
         <div><div class="big" style="color:${missed ? 'var(--signal)' : 'var(--go)'}">${missed}</div><span class="tag">missed clicks · of ${nClick} (${pct(missed, nClick)})</span></div>
@@ -1184,16 +1227,18 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     plotWindow($('detail'), get, n, { labels: true, xTicks: xt, marks: c.markers, centre: c.pre, sndAt: so && so.f[0] >= 6 ? so.at : null, shocks: shockMarks(c) });
     $('detailWhy').textContent = `labelled ${c.label || '— (unlabelled)'}${c.by ? ' by ' + c.by : ''}${c.why ? ' · ' + c.why : ''}${isDrop(c) ? ' · DROP flagged' : ''}${c.pred ? ' · model: ' + c.pred.cls + ' ' + Math.round(c.pred.p * 100) + '%' : ''}`;
     const f = features(c);
-    const shk = shockMarks(c), ret = shk.find(x => x.text === 'return');
-    $('detailInfo').textContent = `${c.label || 'unlabelled'} · ${Math.round(n * 1000 / c.hz)} ms · ${shk.length} shock${shk.length === 1 ? '' : 's'}${ret ? ' · return ' + Math.round((ret.i - shockPeak(c)) * 1000 / c.hz) + ' ms after click' : ''} · ${c.source}`;
+    const shk = shockMarks(c), ret = returnOf(c);
+    $('detailInfo').textContent = `${c.label || 'unlabelled'} · ${Math.round(n * 1000 / c.hz)} ms · ${shk.length} shock${shk.length === 1 ? '' : 's'}${ret ? ` · return ${ret.ms} ms after (held ${(ret.ms / 1000).toFixed(2)} s, ${ret.deg.toFixed(1)}° past click)` : ' · no return click'} · ${c.source}`;
     $('detailFeat').textContent = `shock ${f[0].toFixed(1)} g · twist ${f[3].toFixed(0)} °/s · turn before ${f[6].toFixed(1)}° · after ${f[7].toFixed(1)}° · free fall ${f[8].toFixed(0)} ms · tilt ${f[12].toFixed(0)}°`
       + (so ? ` · sound: sharp +${so.f[0].toFixed(0)} dB, loud +${so.f[1].toFixed(0)} dB, ring ${so.f[3].toFixed(0)} ms, ${so.f[4].toFixed(0)} ms after shock` : '');
   }
+  function oldRate(c) { return Math.abs((c.hz || 0) - 416) > 8; }   // recorded before firmware 3.10
   function renderCounts() {
     const rows = classes.map(k => { const cs = clips.filter(c => c.label === k); return [k, cs.length, new Set(cs.map(c => (c.info && c.info.wrench) || podName(c.tool))).size, outcome(k)]; });
     $('counts').innerHTML = '<tr><th>class</th><th>clips</th><th>wrenches</th><th>counts as</th></tr>' +
       rows.map(r => `<tr><td><i style="display:inline-block;width:10px;height:10px;background:${colorOf(r[0])};margin-right:6px"></i>${esc(r[0])}</td><td class="${r[1] < 30 ? 'miss' : ''}">${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join('') +
-      `<tr><td>unlabelled</td><td>${clips.filter(c => !c.label).length}</td><td></td><td></td></tr>`;
+      `<tr><td>unlabelled</td><td>${clips.filter(c => !c.label).length}</td><td></td><td></td></tr>` +
+      (clips.some(oldRate) ? `<tr><td colspan="4" class="miss">${clips.filter(oldRate).length} clips are from before firmware 3.10 (old sensor rate); training leaves them out once you have 20 new ones</td></tr>` : '');
   }
   function fillFeatSelects() {
     const o = FEAT.map((f, i) => `<option value="${i}">${esc(f)}</option>`).join('');
@@ -1246,7 +1291,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   }
   const CLIP_COLS = ['clip_id', 'date', 'time', 'label', 'counts_as', 'tagged_by', 'wrench_id', 'torque_nm', 'operator', 'fixture', 'notes', 'pod', 'firmware', 'source',
     'duration_ms', 'pod_decision', 'shock_peak_g', 'twist_peak_dps', 'other_axis_peak_dps', 'turn_before_deg', 'turn_after_deg', 'free_fall_ms', 'tilt_change_deg',
-    'return_click_after_ms', 'sound_peak_db', 'sample_rate_hz', 'acc_lsb_g', 'gyr_lsb_dps', 'drive_axis', 'drive_sign', 'pre_samples', 'samples', 'markers', 't_unix_ms'];
+    'return_click_after_ms', 'return_size_ratio', 'turn_click_to_return_deg', 'sound_peak_db', 'sample_rate_hz', 'acc_lsb_g', 'gyr_lsb_dps', 'drive_axis', 'drive_sign', 'pre_samples', 'samples', 'markers', 't_unix_ms'];
   const SAMPLE_COLS = ['clip_id', 'i', 't_ms', 'gx_dps', 'gy_dps', 'gz_dps', 'ax_g', 'ay_g', 'az_g', 'sound_level_db', 'sound_sharp_db'];
   const pad2 = n => String(n).padStart(2, '0');
   const dateOf = t => { const d = new Date(t); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
@@ -1254,10 +1299,10 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   const podName = tool => 'CC-' + String(tool || 0).padStart(3, '0');
   const taggedBy = c => c.by || 'you';
   function clipRow(c) {
-    const f = features(c), n = c.raw.length / 6, so = soundOf(c), ret = shockMarks(c).find(x => x.text === 'return'), i = c.info || {};
+    const f = features(c), n = c.raw.length / 6, so = soundOf(c), ret = returnOf(c), i = c.info || {};
     return [c.id, dateOf(c.t), timeOf(c.t), c.label, outcome(c.label), taggedBy(c), i.wrench, i.torque, i.operator, i.fixture, i.notes, podName(c.tool), c.fw, c.source,
       Math.round(n * 1000 / c.hz), podSaid(c), f[0].toFixed(2), f[3].toFixed(0), f[4].toFixed(0), f[6].toFixed(1), f[7].toFixed(1), f[8].toFixed(0), f[12].toFixed(0),
-      ret ? Math.round((ret.i - shockPeak(c)) * 1000 / c.hz) : '', so ? so.peak : '', c.hz, c.accLsb, c.gyrLsb, 'XYZ'[c.axis], c.sign, c.pre, n,
+      ret ? ret.ms : '', ret ? ret.ratio.toFixed(2) : '', ret ? ret.deg.toFixed(1) : '', so ? so.peak : '', c.hz, c.accLsb, c.gyrLsb, 'XYZ'[c.axis], c.sign, c.pre, n,
       (c.markers || []).map(m => m.kind + '@' + m.i).join(' '), c.t];
   }
   function sampleRows(c) {
@@ -1520,7 +1565,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   };
   window.addEventListener('resize', () => { drawLive(); renderDetail(); renderScatter(); renderClips(); });
   fillFeatSelects(); drawLive(); renderMode();
-  window.__lab = { netProb, modelPayload, get model() { return model; }, get meta() { return meta; }, useFolder, listFiles, clipsCSV, samplesCSV, clipsFromCSV, get fileRows() { return fileRows; }, setMode, get mode() { return mode; }, setLabel, setSoundRef, soundDecide, isDrop, teachCheck, teachMeasure, clips, shocksOf, shockMarks, setPaused, get paused() { return paused; }, get total() { return total; }, demoDo, features, soundOf, get soundTpls() { return soundTpls; }, trainAndTest, startDemo, pushSample, get busy() { return demoQueue.length; } };
+  window.__lab = { returnOf, netProb, modelPayload, get model() { return model; }, get meta() { return meta; }, useFolder, listFiles, clipsCSV, samplesCSV, clipsFromCSV, get fileRows() { return fileRows; }, setMode, get mode() { return mode; }, setLabel, setSoundRef, soundDecide, isDrop, teachCheck, teachMeasure, clips, shocksOf, shockMarks, setPaused, get paused() { return paused; }, get total() { return total; }, demoDo, features, soundOf, get soundTpls() { return soundTpls; }, trainAndTest, startDemo, pushSample, get busy() { return demoQueue.length; } };
   loadAll();
 })();
 </script>
